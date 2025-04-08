@@ -29,7 +29,7 @@ setupSystemdService serviceName execPath port userMaybe groupMaybe workDirMaybe 
         , ""
         , "[Service]"
         , "Type=simple"
-        , "ExecStart=" <> T.pack execPath <> " --port=" <> T.pack port
+        , "ExecStart=" <> T.pack execPath
         , maybe "" (\dir -> "WorkingDirectory=" <> T.pack dir) workDirMaybe
         , maybe "" (\u -> "User=" <> T.pack u) userMaybe
         , maybe "" (\g -> "Group=" <> T.pack g) groupMaybe
