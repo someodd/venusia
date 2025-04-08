@@ -2,6 +2,10 @@
 
 Venusia is a Haskell library for buildling [Internet Gopher Protocol](https://en.wikipedia.org/wiki/Gopher_(protocol)) servers and handling gophermaps/menus.
 
+## WARNING: in alpha
+
+This is currently experimental and the API will be constantly twisted to suit my needs (as a dependency) until the first release.
+
 ## Example
 
 ```haskell
