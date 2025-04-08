@@ -52,8 +52,10 @@ library
     , directory
     , filepath
     , network
+    , process
     , text
     , time
+    , unix
     , unordered-containers
     , utf8-string
   default-language: GHC2021

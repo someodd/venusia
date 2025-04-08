@@ -5,7 +5,9 @@ module Main (main) where
 import Venusia.Server
 import Venusia.MenuBuilder
 import Venusia.FileHandler
+import Venusia.Systemd
 import qualified Data.Text as T
+import System.Environment (getArgs, getExecutablePath)
 
 host :: T.Text
 host = "localhost"
@@ -55,5 +57,28 @@ handleSearch request = do
     , directory "Example dir" "/fake" host port
     ]
 
+-- | Main entry point
 main :: IO ()
-main = serve "7070" noMatchHandler routes
+main = do
+  args <- getArgs
+  
+  -- Check if --setup-service flag is present
+  if "--setup-service" `elem` args then
+    setupService
+  else
+    serve "7070" noMatchHandler routes
+    
+  where
+    -- Setup service for Debian
+    setupService = do
+      -- Get the path to our own executable
+      exePath <- getExecutablePath
+      
+      -- Setup the systemd service
+      setupSystemdService 
+        "venusia-demo"  -- Service name
+        exePath           -- Executable path
+        "7070"              -- Port
+        Nothing   -- User
+        Nothing   -- Group
+        (Just "/tmp/")  -- Working directory
