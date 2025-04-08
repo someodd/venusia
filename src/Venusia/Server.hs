@@ -123,7 +123,7 @@ responseToByteString (BinaryResponse bytes) = bytes
 -- | Start the Gopher server on the specified port
 serve
   :: String
-  -- ^ Port to listen on.
+  -- ^ Port to listen on. FIXME: This should be an Int.
   -> Handler
   -- ^ Handler for invalid selectors.
   -> [Route]

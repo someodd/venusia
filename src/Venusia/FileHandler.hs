@@ -58,11 +58,12 @@ serveDirectory host port root selectorRoot requestedPath = do
     path = if T.isPrefixOf "/" requestedPath
            then root </> T.unpack (T.drop 1 requestedPath)
            else root </> T.unpack requestedPath
-    gopherMapPath = path </> ".gophermap"
   -- check if the path is a subdirectory of the root
   -- (this is a security measure to prevent directory traversal attacks)
+  -- should be using these! FIXME
   rootCanonical <- canonicalizePath root
   pathCanonical <- canonicalizePath path
+  let gopherMapPath = pathCanonical </> ".gophermap"
   let isSubdirectory = rootCanonical `isPrefixOf` pathCanonical
   putStrLn $ rootCanonical ++ " ... " ++ pathCanonical ++ show isSubdirectory
   if not isSubdirectory
@@ -78,7 +79,7 @@ serveDirectory host port root selectorRoot requestedPath = do
           return . TextResponse $ gophermapRender host port content
         else if directoryExists then
           -- Is it 
-          TextResponse <$> listDirectoryAsGophermap host port root selectorRoot path
+          TextResponse <$> listDirectoryAsGophermap host port root selectorRoot pathCanonical
         else do
           -- just serve the file
-          BinaryResponse <$> BL.readFile (root </> T.unpack requestedPath)
+          BinaryResponse <$> BL.readFile pathCanonical
