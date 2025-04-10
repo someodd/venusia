@@ -5,9 +5,11 @@ module Main (main) where
 import Venusia.Server
 import Venusia.MenuBuilder
 import Venusia.FileHandler
+import Venusia.Gateway (executeProcessWithArgs)
 import Venusia.Systemd
 import qualified Data.Text as T
 import System.Environment (getArgs, getExecutablePath)
+
 
 host :: T.Text
 host = "localhost"
@@ -25,6 +27,11 @@ routes =
         Just wildcard -> pure $ TextResponse wildcard
         Nothing -> pure $ TextResponse "Nothing."
   , on "/search" handleSearch
+  , on "/cowsay" handleCowsay
+  , on "/ollama" handleOllama
+  , on "/weather" handleWeather
+  , onWildcard "/figlet/*" handleFiglet
+  , onWildcard "/echo-process/*" handleEcho
   , onWildcard "/files/*" $ \request ->
       case request.reqWildcard of
         Just wildcard -> serveDirectory host port "/home/tilde" "/files/" wildcard Nothing
@@ -56,6 +63,55 @@ handleSearch request = do
     , text "Example file" "/fake" host port
     , directory "Example dir" "/fake" host port
     ]
+
+handleEcho :: Request -> IO Response
+handleEcho request =
+  case request.reqWildcard of
+    Nothing ->
+      pure $ TextResponse "No wildcard provided."
+    (Just something) -> do
+      -- Execute the cowsay command with the query as an argument
+      executeProcessWithArgs "echo" [T.unpack something] False
+
+handleCowsay :: Request -> IO Response
+handleCowsay request =
+  case request.reqQuery of
+    Nothing ->
+      pure $ TextResponse "No query provided."
+    (Just something) -> do
+      -- Execute the cowsay command with the query as an argument
+      executeProcessWithArgs "cowsay" [T.unpack something] True
+
+handleWeather :: Request -> IO Response
+handleWeather request = do
+  case request.reqQuery of
+    Nothing ->
+      pure $ TextResponse "No city provided."
+    (Just city) -> do
+      let safeCity = T.replace " " "%20" city
+      executeProcessWithArgs "curl" ["https://wttr.in/" <> T.unpack safeCity <> "?format=3"] True
+
+handleOllama :: Request -> IO Response
+handleOllama request =
+  case request.reqQuery of
+    Nothing ->
+      pure $ TextResponse "No query provided."
+    (Just query) -> do
+      executeProcessWithArgs "ollama" ["run", "llama3:latest", T.unpack query] True
+
+handleFiglet :: Request -> IO Response
+handleFiglet request = do
+  case request.reqQuery of
+    Nothing ->
+      pure $ TextResponse "No query provided."
+    (Just textToRender) -> do
+      case request.reqWildcard of
+        Just fontToUse ->
+          executeProcessWithArgs "figlet" [T.unpack fontToUse, T.unpack textToRender] True
+        Nothing -> do
+          pure $ TextResponse "No font/wildcard provided."
+
+-- FIXME: add wildcard example for process, provide text file (False)
 
 -- | Main entry point
 main :: IO ()

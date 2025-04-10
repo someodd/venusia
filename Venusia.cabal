@@ -28,6 +28,7 @@ source-repository head
 library
   exposed-modules:
       Venusia.FileHandler
+      Venusia.Gateway
       Venusia.MenuBuilder
       Venusia.Server
       Venusia.Systemd
