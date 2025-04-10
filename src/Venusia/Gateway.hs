@@ -215,7 +215,7 @@ buildGatewayRoutes gateways =
       -- Create appropriate route based on configuration
       if config.gatewayWildcard
         -- If wildcard is enabled, create a wildcard route
-        then [onWildcard (config.gatewaySelector <> "/*") (createGatewayHandler config)]
+        then [onWildcard (config.gatewaySelector) (createGatewayHandler config)]
         -- Otherwise create a standard route
         -- Note: Search capability is handled in the handler, not in route creation
         else [on config.gatewaySelector (createGatewayHandler config)]
