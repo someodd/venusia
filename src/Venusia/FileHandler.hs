@@ -22,7 +22,7 @@ import System.Directory
   , getModificationTime
   , pathIsSymbolicLink
   )
-import Venusia.MenuBuilder (gophermapRender, render, item, error', info, menu, directory)
+import Venusia.MenuBuilder (gophermapRender, render, item, error', info, menu, directory, text)
 import Venusia.Server (Request(..), Response(..))
 import System.FilePath ((</>), takeExtension, makeRelative, takeDirectory)
 import qualified Data.ByteString as BL
@@ -168,24 +168,35 @@ listDirectoryAsGophermap hostname port serveRoot selectorPrefix requestedPath so
         sortedFiles = sortFileInfo sortCriteria fileInfos
         relativePath = makeRelative serveRoot requestedPath
         parentSelector = T.pack $ T.unpack selectorPrefix <> takeDirectory relativePath <> "/"
+        readmePath = requestedPath </> "README.txt"
 
     putStrLn $ "Listing directory: " ++ T.unpack parentSelector
+    
+    -- Check if README.txt exists and read it
+    readmeExists <- doesFileExist readmePath
+    readmeContents <- if readmeExists
+                      then T.lines <$> T.readFile readmePath
+                      else return []
+    
+    -- Convert README contents to info items
+    let readmeItems = map info readmeContents
+        
     gopherItems <-
         mapM (\fi -> do
             let
-              --relativePath = makeRelative serveRoot requestedPath
               filename = T.unpack (fiName fi)
-              -- Create selector path without display name in it
               selector = T.pack $ T.unpack selectorPrefix </> relativePath </> filename
               itemType = if fiIsDir fi then '1' else fileExtensionToItemType filename
-              -- Format display info separate from the selector
               infoText = formatFileInfoTable fi
             return $ item itemType infoText selector hostname port
             ) sortedFiles
+            
+    -- Compile the final menu, including README.txt contents if it exists
     return . render $
       info ("Directory listing for: " <> T.pack relativePath) :
       (if relativePath == "." then mempty else directory "Parent directory (..)" parentSelector hostname port) :
       info "" :
+      (if null readmeContents then mempty else text "README.txt:" (selectorPrefix <> "/README.txt") hostname port : readmeItems ++ [info ""]) ++
       gopherItems
 
 -- | Serve a directory listing or file content
