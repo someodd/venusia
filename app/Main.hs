@@ -27,7 +27,7 @@ routes =
   , on "/search" handleSearch
   , onWildcard "/files/*" $ \request ->
       case request.reqWildcard of
-        Just wildcard -> serveDirectory host port "/home/tilde" "/files/" wildcard
+        Just wildcard -> serveDirectory host port "/home/tilde" "/files/" wildcard Nothing
         Nothing -> pure $ TextResponse "No wildcard provided."
   , onWildcard "/superSearch/*/bar" handleWildcardSearch
   ]
