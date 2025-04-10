@@ -37,7 +37,7 @@ import Data.Maybe (fromMaybe)
 
 -- Constants for formatting
 maxFilenameLength :: Int
-maxFilenameLength = 20  -- Maximum characters to display for a filename
+maxFilenameLength = 40  -- Maximum characters to display for a filename
 
 sizeColumnWidth :: Int
 sizeColumnWidth = 10    -- Width of the size column
@@ -113,34 +113,6 @@ getFileInfo basePath fileName = do
     , fiModTime = safeModTime
     }
 
--- | Truncate a filename if it's too long, adding "..." indicator
-truncateFilename :: T.Text -> T.Text
-truncateFilename name =
-  if T.length name <= maxFilenameLength
-  then name `T.append` T.replicate (maxFilenameLength - T.length name) (T.singleton ' ')
-  else T.take (maxFilenameLength - 4) name `T.append` T.pack "... "
-
--- | Create a tabular representation of file info with fixed-width columns
-formatFileInfoTable :: FileInfo -> T.Text
-formatFileInfoTable fi =
-  let
-    -- Add "/" suffix to directory names
-    name = if fiIsDir fi
-           then fiName fi `T.append` T.pack "/"
-           else fiName fi
-
-    -- Truncate filename if too long and pad to fixed width
-    displayName = truncateFilename name
-
-    -- Format and pad the size column
-    size = T.pack $ formatFileSize (fiSize fi)
-    paddedSize = T.take sizeColumnWidth $ size `T.append` T.replicate sizeColumnWidth (T.singleton ' ')
-
-    -- Time stays as is
-    time = T.pack $ iso8601Show (fiModTime fi)
-  in
-    displayName `T.append` paddedSize `T.append` time
-
 -- | Sort file info based on the specified parameter
 sortFileInfo :: SortBy -> [FileInfo] -> [FileInfo]
 sortFileInfo sortCriteria fileInfos =
@@ -157,6 +129,34 @@ sortFileInfo sortCriteria fileInfos =
       ByTime -> sortBy (comparing fiModTime) files
   in
     sortedDirs ++ sortedFiles
+
+-- Modify the formatFileInfoTable function to ensure proper spacing
+formatFileInfoTable :: FileInfo -> T.Text
+formatFileInfoTable fi =
+  let
+    -- Add "/" suffix to directory names
+    name = if fiIsDir fi
+           then fiName fi `T.append` T.pack "/"
+           else fiName fi
+
+    -- Truncate filename if too long and pad to fixed width
+    displayName = truncateFilename name
+
+    -- Format and pad the size column
+    size = T.pack $ formatFileSize (fiSize fi)
+    paddedSize = T.justifyRight sizeColumnWidth ' ' size
+
+    -- Format date to YYYY-MM-DD only
+    time = T.pack $ formatTime defaultTimeLocale "%Y-%m-%d" (fiModTime fi)
+  in
+    displayName `T.append` paddedSize `T.append` T.pack "  " `T.append` time
+
+-- Update the truncateFilename function to handle the new length
+truncateFilename :: T.Text -> T.Text
+truncateFilename name =
+  if T.length name <= maxFilenameLength
+  then name `T.append` T.replicate (maxFilenameLength - T.length name) (T.singleton ' ')
+  else T.take (maxFilenameLength - 4) name `T.append` T.pack "... "
 
 -- | List directory contents as a gophermap
 listDirectoryAsGophermap :: T.Text -> Int -> FilePath -> T.Text -> FilePath -> Maybe SortBy -> IO T.Text
