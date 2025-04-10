@@ -52,6 +52,7 @@ library:
   - text
   - unordered-containers
   - process
+  - tomland
   - unix
   - utf8-string
 
