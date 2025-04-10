@@ -5,7 +5,7 @@ module Main (main) where
 import Venusia.Server
 import Venusia.MenuBuilder
 import Venusia.FileHandler
-import Venusia.Gateway (executeProcessWithArgs)
+import Venusia.Gateway (executeProcessWithArgs, loadGatewayRoutes)
 import Venusia.Systemd
 import qualified Data.Text as T
 import System.Environment (getArgs, getExecutablePath)
@@ -121,8 +121,9 @@ main = do
   -- Check if --setup-service flag is present
   if "--setup-service" `elem` args then
     setupService
-  else
-    serve "7070" noMatchHandler routes
+  else do
+    gatewayRoutes <- loadGatewayRoutes "gateways.toml"
+    serve "7070" noMatchHandler (gatewayRoutes ++ routes)
     
   where
     -- Setup service for Debian
