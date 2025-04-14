@@ -20,95 +20,67 @@ import Venusia.Server (Response(..), Route, Request(..), on, onWildcard, Handler
 import qualified System.Process as P
 import Control.Exception (try, SomeException)
 import qualified Data.Text as T
-import Venusia.MenuBuilder (error', info)
+import Venusia.MenuBuilder (error', info, render)
 import qualified Toml
 import Toml (TomlCodec, (.=))
 import qualified Data.HashMap.Strict as HM
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, catMaybes)
 import System.IO.Error (catchIOError)
 import Control.Monad (forM, forM_)
 import qualified Data.Text.IO as TIO
 import qualified Data.Map.Strict as Map
+import GHC.Generics (Generic)
+import Data.Hashable (Hashable)
 
 -- | Configuration for a gateway process
 data GatewayConfig = GatewayConfig
-  { gatewaySelector :: T.Text      -- ^ The selector path
-  , gatewaySearch   :: Bool        -- ^ Whether this is a search gateway
-  , gatewayWildcard :: Bool        -- ^ Whether this uses wildcard matching
-  , gatewayCommand  :: T.Text      -- ^ The command to execute
-  , gatewayArgs     :: [T.Text]    -- ^ Arguments to pass to the command
-  , gatewayMenu     :: Bool        -- ^ Whether to format the response as a menu
-  } deriving (Show, Eq)
+  { selector :: T.Text      -- ^ The selector path
+  , search   :: Bool        -- ^ Whether this is a search gateway
+  , wildcard :: Bool        -- ^ Whether this uses wildcard matching
+  , command  :: T.Text      -- ^ The command to execute
+  , arguments     :: [T.Text]    -- ^ Arguments to pass to the command
+  , menu     :: Bool        -- ^ Whether to format the response as a menu
+  , preamble :: Maybe [T.Text]    -- ^ Preamble text to include in the response
+  , postamble :: Maybe [T.Text]   -- ^ Postamble text to include in the response
+  } deriving (Show, Eq, Generic)
 
--- | Codec for a single gateway configuration
+data Gateways = Gateways
+  { gateways :: ![GatewayConfig] -- ^ List of gateway configurations
+  } deriving (Show, Eq, Generic)
+
+-- | Codec for a single gateway configuration using Generic
+gatewaysCodec :: TomlCodec [GatewayConfig]
+gatewaysCodec = Toml.list gatewayConfigCodec "gateway"
+
+-- | Codec for a single gateway configuration using Generic
 gatewayConfigCodec :: TomlCodec GatewayConfig
-gatewayConfigCodec = GatewayConfig
-  <$> Toml.text "selector" .= gatewaySelector
-  <*> Toml.bool "search" .= gatewaySearch
-  <*> Toml.bool "wildcard" .= gatewayWildcard
-  <*> Toml.text "command" .= gatewayCommand
-  <*> Toml.arrayOf Toml._Text "arguments" .= gatewayArgs
-  <*> Toml.bool "menu" .= gatewayMenu
-
--- | Data type for the top-level configuration that matches the TOML structure
-data GatewaysConfig = GatewaysConfig 
-  { gatewaysCowsay      :: Maybe GatewayConfig
-  , gatewaysOllama      :: Maybe GatewayConfig
-  , gatewaysWeather     :: Maybe GatewayConfig
-  , gatewaysFiglet      :: Maybe GatewayConfig
-  , gatewaysEchoProcess :: Maybe GatewayConfig
-  } deriving (Show, Eq)
-
--- | Codec for the overall gateways configuration
-gatewaysCodec :: TomlCodec GatewaysConfig
-gatewaysCodec = GatewaysConfig
-  <$> Toml.dioptional (Toml.table gatewayConfigCodec "gateways.cowsay") .= gatewaysCowsay
-  <*> Toml.dioptional (Toml.table gatewayConfigCodec "gateways.ollama") .= gatewaysOllama
-  <*> Toml.dioptional (Toml.table gatewayConfigCodec "gateways.weather") .= gatewaysWeather
-  <*> Toml.dioptional (Toml.table gatewayConfigCodec "gateways.figlet") .= gatewaysFiglet
-  <*> Toml.dioptional (Toml.table gatewayConfigCodec "gateways.echo-process") .= gatewaysEchoProcess
+gatewayConfigCodec = Toml.genericCodec
 
 -- | Read the gateways configuration from a TOML file
-readGatewaysConfig :: FilePath -> IO (Either String (HM.HashMap T.Text GatewayConfig))
+readGatewaysConfig :: FilePath -> IO (Either String [GatewayConfig])
 readGatewaysConfig path = catchIOError
   (do
     putStrLn $ "Attempting to read TOML file: " ++ path
     contents <- TIO.readFile path
     putStrLn $ "TOML file read successfully, parsing..."
     
+    -- Parse the TOML using our defined codec
     case Toml.decode gatewaysCodec contents of
       Left err -> do
         putStrLn $ "Failed to parse TOML: " ++ show err
         return $ Left $ "Failed to parse TOML: " ++ show err
-      Right config -> do
-        -- Convert the config to a HashMap
-        let gatewaysMap = convertToHashMap config
-        putStrLn $ "Successfully parsed " ++ show (HM.size gatewaysMap) ++ " gateways"
-        forM_ (HM.toList gatewaysMap) $ \(name, config) -> 
-          putStrLn $ "  Gateway: " ++ T.unpack name ++ " -> " ++ T.unpack (gatewaySelector config)
+      
+      Right gateways -> do
+        putStrLn $ "Successfully parsed " ++ show (length gateways) ++ " gateways"
+        forM_ gateways $ \config -> 
+          putStrLn $ "  Gateway: " ++ T.unpack config.selector
         
-        return $ Right gatewaysMap
+        return $ Right gateways
   )
   (\e -> do
     putStrLn $ "Error reading file: " ++ show e
     return $ Left $ "Error reading file: " ++ show e
   )
-
--- | Convert the GatewaysConfig to a HashMap
-convertToHashMap :: GatewaysConfig -> HM.HashMap T.Text GatewayConfig
-convertToHashMap config = HM.fromList $ catMaybes
-  [ fmap ("cowsay",) (gatewaysCowsay config)
-  , fmap ("ollama",) (gatewaysOllama config)
-  , fmap ("weather",) (gatewaysWeather config)
-  , fmap ("figlet",) (gatewaysFiglet config)
-  , fmap ("echo-process",) (gatewaysEchoProcess config)
-  ]
-
--- | Filter out Nothing values from a list
-catMaybes :: [Maybe a] -> [a]
-catMaybes [] = []
-catMaybes (Nothing : xs) = catMaybes xs
-catMaybes (Just x : xs) = x : catMaybes xs
 
 -- | Load gateway routes from a TOML configuration file
 loadGatewayRoutes :: FilePath -> IO [Route]
@@ -126,32 +98,37 @@ loadGatewayRoutes path = do
 
 -- | Create a handler for a gateway configuration
 createGatewayHandler :: GatewayConfig -> Handler
-createGatewayHandler config = \request ->
+createGatewayHandler config request =
   let 
-    searchValue = request.reqQuery
-    wildcardValue = request.reqWildcard
+    searchValue = reqQuery request
+    wildcardValue = reqWildcard request
     
     -- Replace placeholders in arguments with actual values
-    processedArgs = map (substituteArgPlaceholders searchValue wildcardValue) (map T.unpack config.gatewayArgs)
+    processedArgs = map (substituteArgPlaceholders searchValue wildcardValue) (map T.unpack (arguments config))
     
     -- Check if we can execute the command based on available values
-    canExecute = case (config.gatewaySearch, config.gatewayWildcard, searchValue, wildcardValue) of
+    canExecute = case (search config, wildcard config, searchValue, wildcardValue) of
       -- Search required but not provided
       (True, _, Nothing, _) -> 
-        not (any containsSearchPlaceholder config.gatewayArgs)
+        not (any containsSearchPlaceholder (arguments config))
       
       -- Wildcard required but not provided
       (_, True, _, Nothing) -> 
-        not (any containsWildcardPlaceholder config.gatewayArgs)
+        not (any containsWildcardPlaceholder (arguments config))
         
       -- Otherwise we can execute
       _ -> True
   in
     if canExecute
-      then executeProcessWithArgs (T.unpack config.gatewayCommand) processedArgs config.gatewayMenu
-      else if config.gatewaySearch && isNothing searchValue
+      then executeProcessWithArgs 
+             (T.unpack (command config)) 
+             processedArgs 
+             (menu config) 
+             (fromMaybe [] config.preamble)
+             (fromMaybe [] config.postamble)
+      else if search config && isNothing searchValue
         then return $ TextResponse $ error' "No search query provided."
-        else if config.gatewayWildcard && isNothing wildcardValue
+        else if wildcard config && isNothing wildcardValue
           then return $ TextResponse $ error' "No wildcard value captured."
           else return $ TextResponse $ error' "Missing required arguments."
 
@@ -206,19 +183,19 @@ stripPrefix (x:xs) (y:ys) = if x == y then stripPrefix xs ys else Nothing
 stripPrefix _ _ = Nothing
 
 -- | Build routes from a map of gateway configurations
-buildGatewayRoutes :: HM.HashMap T.Text GatewayConfig -> [Route]
+buildGatewayRoutes :: [GatewayConfig] -> [Route]
 buildGatewayRoutes gateways = 
-  concatMap createRoute (HM.elems gateways)
+  concatMap createRoute gateways
   where
     createRoute :: GatewayConfig -> [Route]
     createRoute config = 
       -- Create appropriate route based on configuration
-      if config.gatewayWildcard
+      if wildcard config
         -- If wildcard is enabled, create a wildcard route
-        then [onWildcard (config.gatewaySelector) (createGatewayHandler config)]
+        then [onWildcard (selector config) (createGatewayHandler config)]
         -- Otherwise create a standard route
         -- Note: Search capability is handled in the handler, not in route creation
-        else [on config.gatewaySelector (createGatewayHandler config)]
+        else [on (selector config) (createGatewayHandler config)]
 
 -- | Execute a process without arguments and return the response.
 executeProcess :: String -> IO Response
@@ -233,17 +210,19 @@ executeProcess command = do
 -- You NEED to use `asMenu` for a proper response to search queries, I believe this is
 -- part of the gopher spec, or at least the client I tested expects a menu as a search
 -- response.
-executeProcessWithArgs :: String -> [String] -> Bool -> IO Response
-executeProcessWithArgs command args asMenu = do
+executeProcessWithArgs :: String -> [String] -> Bool -> [T.Text] -> [T.Text] -> IO Response
+executeProcessWithArgs command args asMenu preamble postamble = do
     result <- try (P.readProcess command args "") :: IO (Either SomeException String)
-    case result of
-        Left err  ->
-            if asMenu
-                then return $ TextResponse $ error' . T.pack $ "Process execution failed: " ++ show err
-                else return $ TextResponse $ T.pack $ "Process execution failed: " ++ show err
-        Right out ->
-            if asMenu
-                then
-                    return $ TextResponse . T.unlines $ info . T.pack <$> lines out
-                else
-                    return $ TextResponse $ T.pack out
+    let contents =
+          case result of
+            Left err  ->
+                if asMenu
+                    then [error' . T.pack $ "Process execution failed: " ++ show err]
+                    else [T.pack $ "Process execution failed: " ++ show err]
+            Right out ->
+                if asMenu
+                    then
+                        info . T.pack <$> lines out
+                    else
+                        [T.pack out]
+    return . TextResponse . render $ preamble ++ contents ++ postamble

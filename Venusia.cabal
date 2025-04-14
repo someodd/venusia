@@ -52,6 +52,7 @@ library
     , containers
     , directory
     , filepath
+    , hashable
     , network
     , process
     , text
