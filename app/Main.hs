@@ -71,7 +71,7 @@ handleEcho request =
       pure $ TextResponse "No wildcard provided."
     (Just something) -> do
       -- Execute the cowsay command with the query as an argument
-      executeProcessWithArgs "echo" [T.unpack something] False
+      executeProcessWithArgs "echo" [T.unpack something] False [] []
 
 handleCowsay :: Request -> IO Response
 handleCowsay request =
@@ -80,7 +80,7 @@ handleCowsay request =
       pure $ TextResponse "No query provided."
     (Just something) -> do
       -- Execute the cowsay command with the query as an argument
-      executeProcessWithArgs "cowsay" [T.unpack something] True
+      executeProcessWithArgs "cowsay" [T.unpack something] True [] []
 
 handleWeather :: Request -> IO Response
 handleWeather request = do
@@ -89,7 +89,7 @@ handleWeather request = do
       pure $ TextResponse "No city provided."
     (Just city) -> do
       let safeCity = T.replace " " "%20" city
-      executeProcessWithArgs "curl" ["https://wttr.in/" <> T.unpack safeCity <> "?format=3"] True
+      executeProcessWithArgs "curl" ["https://wttr.in/" <> T.unpack safeCity <> "?format=3"] True [] []
 
 handleOllama :: Request -> IO Response
 handleOllama request =
@@ -97,7 +97,7 @@ handleOllama request =
     Nothing ->
       pure $ TextResponse "No query provided."
     (Just query) -> do
-      executeProcessWithArgs "ollama" ["run", "llama3:latest", T.unpack query] True
+      executeProcessWithArgs "ollama" ["run", "llama3:latest", T.unpack query] True [] []
 
 handleFiglet :: Request -> IO Response
 handleFiglet request = do
@@ -107,7 +107,7 @@ handleFiglet request = do
     (Just textToRender) -> do
       case request.reqWildcard of
         Just fontToUse ->
-          executeProcessWithArgs "figlet" [T.unpack fontToUse, T.unpack textToRender] True
+          executeProcessWithArgs "figlet" [T.unpack fontToUse, T.unpack textToRender] True [] []
         Nothing -> do
           pure $ TextResponse "No font/wildcard provided."
 

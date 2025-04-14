@@ -3,7 +3,7 @@
 # This file configures process-based gateways that can be accessed
 # through the Gopher server.
 
-[gateways.cowsay]
+[[gateway]]
 selector = "/gateway/cowsay"
 search = true
 wildcard = false
@@ -11,15 +11,17 @@ command = "cowsay"
 arguments = ["$search"]
 menu = true
 
-[gateways.ollama]
+[[gateway]]
 selector = "/gateway/ollama/*"
 search = true
 wildcard = true
 command = "ollama"
 arguments = ["run", "$search", "$wildcard"]
 menu = true
+preamble = ["7New query\t/gateway/ollama/llama3:latest/\tlocalhost\t7071"]
+postamble = ["7New query\t/gateway/ollama/llama3:latest/\tlocalhost\t7071"]
 
-[gateways.weather]
+[[gateway]]
 selector = "/gateway/weather"
 search = true
 wildcard = false
@@ -27,7 +29,7 @@ command = "curl"
 arguments = ["https://wttr.in/$search?format=v2"]
 menu = true
 
-[gateways.figlet]
+[[gateway]]
 selector = "/gateway/figlet/*"
 search = true
 wildcard = true
@@ -35,7 +37,7 @@ command = "figlet"
 arguments = ["$search", "$wildcard"]
 menu = true
 
-[gateways.echo-process]
+[[gateway]]
 selector = "/gateway/echo-process"
 search = false
 wildcard = true
