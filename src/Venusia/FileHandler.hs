@@ -196,7 +196,7 @@ listDirectoryAsGophermap hostname port serveRoot selectorPrefix requestedPath so
       info ("Directory listing for: " <> T.pack relativePath) :
       (if relativePath == "." then mempty else directory "Parent directory (..)" parentSelector hostname port) :
       info "" :
-      (if null readmeContents then mempty else text "README.txt:" (selectorPrefix <> "/README.txt") hostname port : readmeItems ++ [info ""]) ++
+      (if null readmeContents then mempty else text "README.txt:" (T.pack $ T.unpack selectorPrefix </> relativePath </> "README.txt") hostname port : readmeItems ++ [info ""]) ++
       gopherItems
 
 -- | Serve a directory listing or file content
