@@ -31,6 +31,7 @@ library
       Venusia.Gateway
       Venusia.MenuBuilder
       Venusia.Server
+      Venusia.Server.Watcher
       Venusia.Systemd
       Venusia.Types
   other-modules:
@@ -44,7 +45,9 @@ library
       DeriveGeneric
       DeriveAnyClass
       OverloadedRecordDot
+      RecordWildCards
       DuplicateRecordFields
+      NoFieldSelectors
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
   build-depends:
       base
@@ -52,6 +55,7 @@ library
     , containers
     , directory
     , filepath
+    , fsnotify
     , hashable
     , network
     , process
@@ -73,15 +77,19 @@ executable Venusia-exe
       app
   default-extensions:
       OverloadedStrings
+      RecordWildCards
       DeriveGeneric
       DeriveAnyClass
       OverloadedRecordDot
+      NoFieldSelectors
       DuplicateRecordFields
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       Venusia
     , base
     , bytestring
+    , filepath
+    , optparse-applicative
     , text
   default-language: Haskell2010
 

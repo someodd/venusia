@@ -100,35 +100,35 @@ loadGatewayRoutes path = do
 createGatewayHandler :: GatewayConfig -> Handler
 createGatewayHandler config request =
   let 
-    searchValue = reqQuery request
-    wildcardValue = reqWildcard request
+    searchValue = request.reqQuery
+    wildcardValue = request.reqWildcard
     
     -- Replace placeholders in arguments with actual values
-    processedArgs = map (substituteArgPlaceholders searchValue wildcardValue) (map T.unpack (arguments config))
+    processedArgs = map (substituteArgPlaceholders searchValue wildcardValue) (map T.unpack (config.arguments))
     
     -- Check if we can execute the command based on available values
-    canExecute = case (search config, wildcard config, searchValue, wildcardValue) of
+    canExecute = case (config.search, config.wildcard, searchValue, wildcardValue) of
       -- Search required but not provided
       (True, _, Nothing, _) -> 
-        not (any containsSearchPlaceholder (arguments config))
+        not (any containsSearchPlaceholder (config.arguments))
       
       -- Wildcard required but not provided
       (_, True, _, Nothing) -> 
-        not (any containsWildcardPlaceholder (arguments config))
+        not (any containsWildcardPlaceholder (config.arguments))
         
       -- Otherwise we can execute
       _ -> True
   in
     if canExecute
       then executeProcessWithArgs 
-             (T.unpack (command config)) 
+             (T.unpack config.command)
              processedArgs 
-             (menu config) 
+             config.menu 
              (fromMaybe [] config.preamble)
              (fromMaybe [] config.postamble)
-      else if search config && isNothing searchValue
+      else if config.search && isNothing searchValue
         then return $ TextResponse $ error' "No search query provided."
-        else if wildcard config && isNothing wildcardValue
+        else if config.wildcard && isNothing wildcardValue
           then return $ TextResponse $ error' "No wildcard value captured."
           else return $ TextResponse $ error' "Missing required arguments."
 
@@ -190,12 +190,12 @@ buildGatewayRoutes gateways =
     createRoute :: GatewayConfig -> [Route]
     createRoute config = 
       -- Create appropriate route based on configuration
-      if wildcard config
+      if config.wildcard
         -- If wildcard is enabled, create a wildcard route
-        then [onWildcard (selector config) (createGatewayHandler config)]
+        then [onWildcard config.selector (createGatewayHandler config)]
         -- Otherwise create a standard route
         -- Note: Search capability is handled in the handler, not in route creation
-        else [on (selector config) (createGatewayHandler config)]
+        else [on config.selector (createGatewayHandler config)]
 
 -- | Execute a process without arguments and return the response.
 executeProcess :: String -> IO Response

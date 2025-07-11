@@ -118,15 +118,15 @@ sortFileInfo :: SortBy -> [FileInfo] -> [FileInfo]
 sortFileInfo sortCriteria fileInfos =
   -- Always sort directories first, then apply the selected sort criteria
   let
-    (dirs, files) = partition fiIsDir fileInfos
+    (dirs, files) = partition (.fiIsDir) fileInfos
     sortedDirs = case sortCriteria of
-      ByName -> sortBy (comparing fiName) dirs
+      ByName -> sortBy (comparing (.fiName)) dirs
       BySize -> dirs  -- Directories all have size 0, so keep original order
-      ByTime -> sortBy (comparing fiModTime) dirs
+      ByTime -> sortBy (comparing (.fiModTime)) dirs
     sortedFiles = case sortCriteria of
-      ByName -> sortBy (comparing fiName) files
-      BySize -> sortBy (comparing fiSize) files
-      ByTime -> sortBy (comparing fiModTime) files
+      ByName -> sortBy (comparing (.fiName)) files
+      BySize -> sortBy (comparing (.fiSize)) files
+      ByTime -> sortBy (comparing (.fiModTime)) files
   in
     sortedDirs ++ sortedFiles
 
@@ -135,19 +135,19 @@ formatFileInfoTable :: FileInfo -> T.Text
 formatFileInfoTable fi =
   let
     -- Add "/" suffix to directory names
-    name = if fiIsDir fi
-           then fiName fi `T.append` T.pack "/"
-           else fiName fi
+    name = if fi.fiIsDir
+           then fi.fiName `T.append` T.pack "/"
+           else fi.fiName
 
     -- Truncate filename if too long and pad to fixed width
     displayName = truncateFilename name
 
     -- Format and pad the size column
-    size = T.pack $ formatFileSize (fiSize fi)
+    size = T.pack $ formatFileSize fi.fiSize
     paddedSize = T.justifyRight sizeColumnWidth ' ' size
 
     -- Format date to YYYY-MM-DD only
-    time = T.pack $ formatTime defaultTimeLocale "%Y-%m-%d" (fiModTime fi)
+    time = T.pack $ formatTime defaultTimeLocale "%Y-%m-%d" fi.fiModTime
   in
     displayName `T.append` paddedSize `T.append` T.pack "  " `T.append` time
 
@@ -158,6 +158,7 @@ truncateFilename name =
   then name `T.append` T.replicate (maxFilenameLength - T.length name) (T.singleton ' ')
   else T.take (maxFilenameLength - 4) name `T.append` T.pack "... "
 
+-- FIXME: this is so messy! it's hard to tell what's going on with the file paths.
 -- | List directory contents as a gophermap
 listDirectoryAsGophermap :: T.Text -> Int -> FilePath -> T.Text -> FilePath -> Maybe SortBy -> IO T.Text
 listDirectoryAsGophermap hostname port serveRoot selectorPrefix requestedPath sortBy = do
@@ -184,9 +185,9 @@ listDirectoryAsGophermap hostname port serveRoot selectorPrefix requestedPath so
     gopherItems <-
         mapM (\fi -> do
             let
-              filename = T.unpack (fiName fi)
+              filename = T.unpack fi.fiName
               selector = T.pack $ T.unpack selectorPrefix </> relativePath </> filename
-              itemType = if fiIsDir fi then '1' else fileExtensionToItemType filename
+              itemType = if fi.fiIsDir then '1' else fileExtensionToItemType filename
               infoText = formatFileInfoTable fi
             return $ item itemType infoText selector hostname port
             ) sortedFiles

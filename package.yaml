@@ -40,7 +40,9 @@ library:
   - DeriveGeneric
   - DeriveAnyClass
   - OverloadedRecordDot
+  - RecordWildCards
   - DuplicateRecordFields
+  - NoFieldSelectors
   default-language: GHC2021
   dependencies:
   - bytestring
@@ -50,6 +52,9 @@ library:
   - time
   - network
   - text
+  - process
+  - time
+  - fsnotify
   - unordered-containers
   - process
   - tomland
@@ -69,11 +74,15 @@ executables:
     - Venusia
     - bytestring
     - text
+    - filepath
+    - optparse-applicative
     default-extensions:
     - OverloadedStrings
+    - RecordWildCards
     - DeriveGeneric
     - DeriveAnyClass
     - OverloadedRecordDot
+    - NoFieldSelectors
     - DuplicateRecordFields
 
 tests:
