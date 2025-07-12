@@ -65,7 +65,7 @@ serveWatchCommand = Watch <$> (ServeWatchOptions
     <*> optional hookInfoParser) -- CHANGED: Use the new hook info parser.
 
 -- | Main entry point
-main :: IO ()
+main :: IO () 
 main = do
   let commands = subparser
         ( command "watch" (info serveWatchCommand (progDesc "Serve and watch a directory for changes."))
@@ -75,7 +75,7 @@ main = do
   let opts = info (helper <*> commands)
                (fullDesc <> progDesc "Venusia Server and Systemd Utility")
   
-  cmd <- execParser opts
+  cmd <- execParser opts 
   runCommand cmd
 
 -- | Dispatcher to run the logic for the chosen command.
