@@ -8,6 +8,10 @@ and this project adheres to the
 
 ## Unreleased
 
+### Removed
+
+* All things related to systemd in the software itself, I'm just going to let the workflow manage that.
+
 ## 0.1.0.0 - 2025-03-26
 
 Initial release.

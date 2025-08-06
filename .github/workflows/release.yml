@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: haskell-actions/setup@v2
+      with:
+        ghc-version: '9.4.8'
+        stack-version: 'latest'
+        enable-stack: true
+        
+    - name: Build with Stack
+      run: stack build --copy-bins --local-bin-path ./dist
+      
+    - name: Create Debian package
+      run: |
+        sudo gem install fpm
+        mkdir -p pkg/usr/bin
+        cp ./dist/Venusia-exe pkg/usr/bin/venusia
+        chmod +x pkg/usr/bin/venusia
+        
+        fpm -s dir -t deb -n venusia -v ${GITHUB_REF#refs/tags/v} \
+          --description "Venusia Gopher server" \
+          --maintainer "someodd <someodd@pm.me>" \
+          --url "https://github.com/someodd/Venusia" \
+          --license "BSD-3-Clause" \
+          --depends libc6 --depends libgmp10 --depends zlib1g \
+          -C pkg usr/bin/venusia
+          
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: "*.deb"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -32,7 +32,6 @@ library
       Venusia.MenuBuilder
       Venusia.Server
       Venusia.Server.Watcher
-      Venusia.Systemd
       Venusia.Types
   other-modules:
       Paths_Venusia
