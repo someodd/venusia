@@ -20,7 +20,9 @@ Features:
 
   * Gateway configuration: use a simple TOML file to configure "gateways"
   * Watch server: watch a directory and reload when it changes or when the gateways change
-  * Tools for `systemd` integration
+  * `systemd` integration
+
+Once you install the Debian package just edit the `systemd` config and reload it.
 
 ## WARNING: in alpha
 

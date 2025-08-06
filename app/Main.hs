@@ -48,7 +48,7 @@ serveWatchCommand = Watch <$> (ServeWatchOptions
 main :: IO () 
 main = do
   let commands = subparser
-        ( command "watch" (info serveWatchCommand (progDesc "Serve and watch a directory for changes."))
+        ( command "watch" (info serveWatchCommand (progDesc "Serve and watch a directory for changes. This directory will also be checked for gateways file."))
         )
 
   let opts = info (helper <*> commands)
@@ -63,7 +63,7 @@ runCommand (Watch opts)   = runServeWatch opts
 
 -- | The main action: starts the server and watches for changes in the specified directory.
 runServeWatch :: ServeWatchOptions -> IO ()
-runServeWatch opts@ServeWatchOptions{..} = do
+runServeWatch ServeWatchOptions{..} = do
   let
     gatewayPath = watchDir </> gatewaysFile
     maybeWatchHook = fmap (\HookInfo{..} -> WatchHook hookCommand (Just hookDelay)) maybeHookInfo

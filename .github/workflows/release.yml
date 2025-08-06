@@ -24,17 +24,64 @@ jobs:
     - name: Create Debian package
       run: |
         sudo gem install fpm
+
+        # --- 1. Create the directory structure for packaging ---
         mkdir -p pkg/usr/bin
+        mkdir -p pkg/lib/systemd/system
+        
+        # --- 2. Copy the main executable ---
         cp ./dist/Venusia-exe pkg/usr/bin/venusia
         chmod +x pkg/usr/bin/venusia
         
+        # --- 3. Create the systemd service file ---
+        cat <<EOF > pkg/lib/systemd/system/venusia.service
+        [Unit]
+        Description=Venusia Gopher Server
+        After=network.target
+        
+        [Service]
+        Type=simple
+        User=nobody
+        Group=nogroup
+        # Run the server and tell it to watch the /var/gopher directory
+        ExecStart=/usr/bin/venusia watch /var/gopher
+        Restart=on-failure
+        
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+        
+        # --- 4. Create the post-installation script ---
+        # This script is run by dpkg after the package is installed.
+        cat <<EOF > ./post-install.sh
+        #!/bin/sh
+        echo "Enabling and starting venusia.service..."
+        systemctl daemon-reload
+        systemctl enable venusia.service
+        systemctl start venusia.service
+        EOF
+        chmod +x ./post-install.sh
+        
+        # --- 5. Create the pre-removal script ---
+        # This script is run by dpkg before the package is removed.
+        cat <<EOF > ./pre-uninstall.sh
+        #!/bin/sh
+        echo "Stopping and disabling venusia.service..."
+        systemctl stop venusia.service
+        systemctl disable venusia.service
+        EOF
+        chmod +x ./pre-uninstall.sh
+
+        # --- 6. Build the Debian package with fpm ---
         fpm -s dir -t deb -n venusia -v ${GITHUB_REF#refs/tags/v} \
           --description "Venusia Gopher server" \
           --maintainer "someodd <someodd@pm.me>" \
           --url "https://github.com/someodd/Venusia" \
           --license "BSD-3-Clause" \
           --depends libc6 --depends libgmp10 --depends zlib1g \
-          -C pkg usr/bin/venusia
+          --after-install ./post-install.sh \
+          --before-remove ./pre-uninstall.sh \
+          -C pkg usr/bin/venusia lib/systemd/system/venusia.service
           
     - name: Release
       uses: softprops/action-gh-release@v1
