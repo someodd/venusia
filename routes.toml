@@ -44,3 +44,22 @@ wildcard = true
 command = "echo"
 arguments = ["$wildcard"]
 menu = false
+
+# [[search]] defines a route that uses the built-in search handler.
+[[search]]
+selector = "/search"
+path = "/var/gopher/searchable"
+
+[[search]]
+selector = "/search-docs"
+path = "./"
+
+# [[files]] defines a route that uses the built-in file server.
+# The selector MUST end with '/*' to capture the path.
+[[files]]
+selector = "/files/*"
+path = "./"
+
+[[files]]
+selector = "/images/*"
+path = "/var/gopher/images"

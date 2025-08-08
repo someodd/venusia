@@ -28,8 +28,9 @@ source-repository head
 library
   exposed-modules:
       Venusia.FileHandler
-      Venusia.Gateway
       Venusia.MenuBuilder
+      Venusia.Routes
+      Venusia.SearchHandler
       Venusia.Server
       Venusia.Server.Watcher
       Venusia.Types
@@ -58,6 +59,7 @@ library
     , hashable
     , network
     , process
+    , ryvm
     , text
     , time
     , tomland

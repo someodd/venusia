@@ -26,7 +26,7 @@ routes =
       case request.reqWildcard of
         Just wildcard -> pure $ TextResponse wildcard
         Nothing -> pure $ TextResponse "Nothing."
-  , on "/search" handleSearch
+  , on "/search" handleSearch "./" host port
   , on "/cowsay" handleCowsay
   , on "/ollama" handleOllama
   , on "/weather" handleWeather
@@ -49,20 +49,6 @@ handleWildcardSearch request =
       pure $ TextResponse $ info "User error: missing query."
     (Just wildcard, Just query) -> do
       pure . TextResponse . info $ wildcard <> " AND " <> query
-
--- | Handler for search queries (Gopher item type 7).
-handleSearch :: Request -> IO Response
-handleSearch request = do
-  let query =
-        case request.reqQuery of
-          Nothing -> ""
-          (Just something) -> something
-  -- Build the response
-  return . TextResponse . render $
-    [ info "Search results for: " <> query
-    , text "Example file" "/fake" host port
-    , directory "Example dir" "/fake" host port
-    ]
 
 handleEcho :: Request -> IO Response
 handleEcho request =

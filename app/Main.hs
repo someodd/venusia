@@ -2,19 +2,16 @@ module Main (main) where
 
 import Venusia.Server
 import Venusia.Server.Watcher (watchForChanges, WatchHook(..))
-import Venusia.Gateway (loadGatewayRoutes)
+import Venusia.Routes (loadRoutes)
 import Options.Applicative
 import System.FilePath ((</>))
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar (newMVar)
+import qualified Data.Text as T
 
 -- | The name of the routes file to look for inside the watched directory.
-gatewaysFile :: FilePath
-gatewaysFile = "gateways.toml"
-
--- | The port the server will listen on.
-serverPort :: String
-serverPort = "7070"
+routesFile :: FilePath
+routesFile = "routes.toml"
 
 -- | Defines the CLI's command structure.
 data Command
@@ -23,7 +20,9 @@ data Command
 -- | Options for the 'watch' command.
 data ServeWatchOptions = ServeWatchOptions
   { watchDir      :: FilePath
-  , maybeHookInfo :: Maybe HookInfo -- CHANGED: Now holds optional hook info.
+  , host          :: String
+  , port          :: Int
+  , maybeHookInfo :: Maybe HookInfo
   }
 
 -- | A new record to group the hook command and its delay.
@@ -42,19 +41,21 @@ hookInfoParser = HookInfo
 serveWatchCommand :: Parser Command
 serveWatchCommand = Watch <$> (ServeWatchOptions
     <$> strArgument (metavar "WATCH_DIR" <> help "Directory to watch for changes.")
-    <*> optional hookInfoParser) -- CHANGED: Use the new hook info parser.
+    <*> strArgument (metavar "HOST" <> help "Host to bind the server to (e.g., '127.0.0.1' or 'gopher.someodd.zip').")
+    <*> argument auto (metavar "PORT" <> help "Port number to listen on (e.g., 7070).")
+    <*> optional hookInfoParser)
 
 -- | Main entry point
-main :: IO () 
+main :: IO ()
 main = do
   let commands = subparser
-        ( command "watch" (info serveWatchCommand (progDesc "Serve and watch a directory for changes. This directory will also be checked for gateways file."))
+        ( command "watch" (info serveWatchCommand (progDesc "Serve and watch a directory for changes. This directory will also be checked for a routes.toml file."))
         )
 
   let opts = info (helper <*> commands)
-               (fullDesc <> progDesc "Venusia Server and Systemd Utility")
-  
-  cmd <- execParser opts 
+               (fullDesc <> progDesc "Venusia Internet Gopher Protocol Server Daemon")
+
+  cmd <- execParser opts
   runCommand cmd
 
 -- | Dispatcher to run the logic for the chosen command.
@@ -65,11 +66,11 @@ runCommand (Watch opts)   = runServeWatch opts
 runServeWatch :: ServeWatchOptions -> IO ()
 runServeWatch ServeWatchOptions{..} = do
   let
-    gatewayPath = watchDir </> gatewaysFile
+    routesPath = watchDir </> routesFile
     maybeWatchHook = fmap (\HookInfo{..} -> WatchHook hookCommand (Just hookDelay)) maybeHookInfo
-  
-  initialRoutes <- loadGatewayRoutes gatewayPath
-  routesMVar <- newMVar initialRoutes
-  _ <- forkIO $ watchForChanges maybeWatchHook watchDir gatewayPath routesMVar
-  serveHotReload serverPort noMatchHandler routesMVar
+    hostText = T.pack host
 
+  initialRoutes <- loadRoutes routesPath hostText port
+  routesMVar <- newMVar initialRoutes
+  _ <- forkIO $ watchForChanges hostText port maybeWatchHook watchDir routesPath routesMVar
+  serveHotReload (show port) noMatchHandler routesMVar

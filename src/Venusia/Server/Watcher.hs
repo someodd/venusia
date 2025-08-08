@@ -7,6 +7,7 @@
 -- others for a set period, ensuring a command runs only once per actual change.
 module Venusia.Server.Watcher (watchForChanges, WatchHook (..)) where
 
+import qualified Data.Text as T
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, swapMVar, tryTakeMVar)
 import Control.Monad (forever, void, when)
@@ -14,7 +15,7 @@ import Data.Maybe (fromMaybe)
 import System.FSNotify (watchTree, withManager)
 import System.FilePath ((</>))
 import System.Process (callCommand)
-import Venusia.Gateway (loadGatewayRoutes)
+import Venusia.Routes (loadRoutes)
 import Venusia.Server (Route)
 
 -- | Describes a command to run when a file change is detected.
@@ -32,10 +33,10 @@ data WatchHook = WatchHook
   deriving (Show)
 
 -- | Internal helper to atomically swap the application's routes.
-reloadRoutes :: MVar [Route] -> FilePath -> IO ()
-reloadRoutes routesMVar gatewayPath = do
+reloadRoutes :: MVar [Route] -> FilePath -> T.Text -> Int -> IO ()
+reloadRoutes routesMVar gatewayPath host port = do
   putStrLn "Reloading routes..."
-  newRoutes <- loadGatewayRoutes gatewayPath
+  newRoutes <- loadRoutes gatewayPath host port
   void $ swapMVar routesMVar newRoutes
 
 -- | Watches a directory for file changes and runs a hook.
@@ -56,6 +57,10 @@ reloadRoutes routesMVar gatewayPath = do
 -- This function is designed to be the main action of a program and will
 -- run forever, so it will block the calling thread.
 watchForChanges ::
+  -- | The host to use for relative/local menu items.
+  T.Text ->
+  -- | The port to use for relative/local menu items.
+  Int ->
   -- | The hook to run. If 'Nothing', this function does nothing.
   Maybe WatchHook ->
   -- | The directory path to watch for changes.
@@ -65,7 +70,7 @@ watchForChanges ::
   -- | The 'MVar' holding the server's routes to be updated.
   MVar [Route] ->
   IO ()
-watchForChanges maybeHook watchDirectoryPath gatewayPath routesMVar = withManager $ \mgr -> do
+watchForChanges host port maybeHook watchDirectoryPath gatewayPath routesMVar = withManager $ \mgr -> do
   putStrLn $ "Watching for changes in: " ++ watchDirectoryPath
 
   case maybeHook of
@@ -92,7 +97,7 @@ watchForChanges maybeHook watchDirectoryPath gatewayPath routesMVar = withManage
 
             putStrLn $ "Executing hook: " ++ command
             callCommand command
-            reloadRoutes routesMVar gatewayPath
+            reloadRoutes routesMVar gatewayPath host port
 
             putStrLn "Hook finished. Ready for next change."
             -- Releasing the lock allows the next event to be processed.
