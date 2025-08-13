@@ -37,6 +37,11 @@ jobs:
         ghc-version: '9.4.8'
         stack-version: 'latest'
         enable-stack: true
+
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y z3
         
     - name: Build with Stack
       run: stack build --copy-bins --local-bin-path ./dist
