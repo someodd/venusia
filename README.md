@@ -22,7 +22,20 @@ Features:
   * Watch server: watch a directory and reload when it changes or when the gateways change
   * `systemd` integration
 
-Once you install the Debian package just edit the `systemd` config and reload it.
+Once you install the Debian package just edit the `systemd` config at `/lib/systemd/system/venusia.service` and reload it. For example, you might want to change it like this to work with [bore](https://github.com/someodd/bore) (make sure the directories exist, with `bore` owning them):
+
+```
+ExecStart=/usr/bin/venusia watch /var/gopher/source gopher.someodd.zip 7071 "bore build --source /var/gopher/source --output /var/gopher/output" 10000000
+```
+
+Then run:
+
+```
+sudo systemctl daemon-reload
+sudo systemctl restart venusia.service
+```
+
+Maybe in the future I'll make an `/etc/venusia.toml`.
 
 ## WARNING: in alpha
 

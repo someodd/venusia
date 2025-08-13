@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to simulate (e.g., v1.0.0-test)'
+        required: true
+        default: 'v1.0.0-test'
+      skip_publish:
+        description: 'Skip actual publishing of release'
+        type: boolean
+        default: true
 
 jobs:
   release:
@@ -12,6 +22,16 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
+    - name: Set version
+      run: |
+        if [[ "${{ github.event_name }}" == "push" ]]; then
+          # For a tag 'v1.2.3', GITHUB_REF_NAME is 'v1.2.3'. This preserves the 'v'.
+          echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+        else
+          # For manual runs, use the input directly (e.g., 'v1.0.0-test')
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+        fi
+        
     - uses: haskell-actions/setup@v2
       with:
         ghc-version: '9.4.8'
@@ -25,66 +45,67 @@ jobs:
       run: |
         sudo gem install fpm
 
-        # --- 1. Create the directory structure for packaging ---
+        # --- (Package creation steps) ---
         mkdir -p pkg/usr/bin
         mkdir -p pkg/lib/systemd/system
-        
-        # --- 2. Copy the main executable ---
         cp ./dist/Venusia-exe pkg/usr/bin/venusia
         chmod +x pkg/usr/bin/venusia
-        
-        # --- 3. Create the systemd service file ---
-        cat <<EOF > pkg/lib/systemd/system/venusia.service
+        cat <<'EOF' > pkg/lib/systemd/system/venusia.service
         [Unit]
         Description=Venusia Gopher Server
         After=network.target
-        
         [Service]
         Type=simple
-        User=nobody
-        Group=nogroup
-        # Run the server and tell it to watch the /var/gopher directory
-        ExecStart=/usr/bin/venusia watch /var/gopher
+        User=venusia
+        Group=venusia
+        ExecStart=/usr/bin/venusia watch /var/gopher/source
         Restart=on-failure
-        
         [Install]
         WantedBy=multi-user.target
         EOF
-        
-        # --- 4. Create the post-installation script ---
-        # This script is run by dpkg after the package is installed.
-        cat <<EOF > ./post-install.sh
+        cat <<'EOF' > ./pre-install.sh
         #!/bin/sh
-        echo "Enabling and starting venusia.service..."
+        set -e
+        if ! getent group venusia >/dev/null; then groupadd --system venusia; fi
+        if ! id -u venusia >/dev/null 2>&1; then useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin -g venusia venusia; fi
+        install -d -m 0755 /var/gopher
+        install -d -o venusia -g venusia -m 0750 /var/gopher/source
+        EOF
+        chmod +x ./pre-install.sh
+        cat <<'EOF' > ./post-install.sh
+        #!/bin/sh
+        set -e
         systemctl daemon-reload
         systemctl enable venusia.service
         systemctl start venusia.service
         EOF
         chmod +x ./post-install.sh
-        
-        # --- 5. Create the pre-removal script ---
-        # This script is run by dpkg before the package is removed.
-        cat <<EOF > ./pre-uninstall.sh
+        cat <<'EOF' > ./pre-uninstall.sh
         #!/bin/sh
-        echo "Stopping and disabling venusia.service..."
+        set -e
         systemctl stop venusia.service
         systemctl disable venusia.service
         EOF
         chmod +x ./pre-uninstall.sh
 
-        # --- 6. Build the Debian package with fpm ---
-        fpm -s dir -t deb -n venusia -v ${GITHUB_REF#refs/tags/v} \
+        # Actually create the package!
+        fpm -s dir -t deb -n venusia -v ${{ env.VERSION }} \
           --description "Venusia Gopher server" \
           --maintainer "someodd <someodd@pm.me>" \
           --url "https://github.com/someodd/Venusia" \
           --license "BSD-3-Clause" \
           --depends libc6 --depends libgmp10 --depends zlib1g \
+          --before-install ./pre-install.sh \
           --after-install ./post-install.sh \
           --before-remove ./pre-uninstall.sh \
           -C pkg usr/bin/venusia lib/systemd/system/venusia.service
           
     - name: Release
       uses: softprops/action-gh-release@v1
+      # This condition to skip publishing remains the same
+      if: |
+        github.event_name == 'push' || 
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.skip_publish == false)
       with:
         files: "*.deb"
       env:
