@@ -5,7 +5,7 @@ cabal-version: 2.2
 -- see: https://github.com/sol/hpack
 
 name:           Venusia
-version:        0.1.0.0
+version:        0.2.0.0
 synopsis:       Internet Gopher Protocol server framework, including tools for menus
 description:    Please see the README on GitHub at <https://github.com/someodd/Venusia#readme>
 category:       Network

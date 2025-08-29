@@ -8,6 +8,13 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.2.0.0 - 2025-08-28
+
+### Added
+
+* Search+files support in gateway/routes config
+* Host/port config from watch cli
+
 ## 0.1.0.0 - 2025-08-05
 
 ### Removed
