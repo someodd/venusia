@@ -128,7 +128,7 @@ For production, Venusia offers Debian packages with `systemd` support to run as 
 After installing a package, you can edit the service configuration at `/lib/systemd/system/venusia.service`. For example, to integrate with `bore`, you could change the `ExecStart` line to:
 
 ```
-ExecStart=/usr/bin/venusia watch /var/gopher/source gopher.someodd.zip 7071 "bore build --source /var/gopher/source --output /var/gopher/output" 10000000
+ExecStart=/usr/bin/venusia watch /var/gopher/source gopher.someodd.zip 7071 "/usr/bin/bore build --source /var/gopher/source --output /var/gopher/output" 10000000
 ```
 
 Then, reload the `systemd` daemon and restart the service:
