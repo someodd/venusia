@@ -123,7 +123,7 @@ To build a custom server, use Venusia in your own Haskell project.
 
 ## Debian Packages & `systemd`
 
-For production, Venusia offers Debian packages with `systemd` support to run as a managed daemon.
+For production, [Venusia offers Debian packages](https://github.com/someodd/venusia/releases) with `systemd` support to run as a managed daemon.
 
 After installing a package, you can edit the service configuration at `/lib/systemd/system/venusia.service`. For example, to integrate with `bore`, you could change the `ExecStart` line to:
 
