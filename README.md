@@ -20,7 +20,7 @@ Venusia is a complete framework for creating modern Gopherholes.
 
 #### As a Daemon (`venusia-exe`)
 
-  * **TOML Configuration:** Use a simple `routes.toml` to configure file servers, search, and gateways.
+  * **TOML Configuration:** Use a simple `routes.toml` to configure file servers and gateways.
   * **Hot Reloading:** Watches your directory and `routes.toml`, reloading automatically on changes with no downtime.
   * **Process Gateways:** Execute external commands (e.g., `cowsay`, `figlet`, `curl`) and serve their output.
 
@@ -41,11 +41,6 @@ The quickest way to start is with the `venusia-exe` daemon.
     # NOTE: Do not use a wildcard (*) in the files selector.
     [[files]]
     selector = "/files/"
-    path = "./"
-
-    # Creates a search endpoint for the current directory.
-    [[search]]
-    selector = "/search"
     path = "./"
 
     # Gateway to the 'cowsay' command.
@@ -93,7 +88,7 @@ And here's the `/var/gopher/source/search.sh` (don't forget to `chmod +X`!):
 
 ```
 #!/usr/bin/env bash
-# search2gophermap.sh <search> [HOST] [PORT]
+# search.sh <search> [HOST] [PORT]
 s="$1"; h="${2:-gopher.someodd.zip}"; p="${3:-70}"
 cd /var/gopher/out || exit 1
 
@@ -155,7 +150,6 @@ To build a custom server, use Venusia in your own Haskell project.
           return $ TextResponse "Hello, gopher!\r\n"
       , onWildcard "/echo/*" $ \req ->
           pure $ TextResponse $ req.reqWildcard & fromMaybe "Nothing."
-      , on "/search" (handleSearch "./" host port)
       , onWildcard "/files/*" $ \req ->
           case req.reqWildcard of
             Just path -> serveDirectory host port "/var/gopher" "/files/" path Nothing
@@ -191,9 +185,6 @@ Configure the daemon by defining routes in `routes.toml`.
   * **`[[files]]`**: Serves static files.
       * `selector`: Gopher path prefix (e.g., `/files/`).
       * `path`: Local directory to serve.
-  * **`[[search]]`**: Provides a search endpoint.
-      * `selector`: Gopher path for the query.
-      * `path`: Local directory to index and search.
   * **`[[gateway]]`**: Executes a shell command.
       * `selector`: Gopher path, can include a wildcard (`*`).
       * `command`: The command to run.
