@@ -30,14 +30,12 @@ import           Venusia.MenuBuilder        (error', info, render)
 import           Venusia.Server             (Handler, Request (..), Response (..),
                                              Route, on, onWildcard)
 import           Venusia.FileHandler        (serveDirectory)
-import           Venusia.SearchHandler      (serveSearch)
 
 -- Configuration Data Types ---
 
 -- | Top-level configuration holding lists for each route type.
 data RoutesConfig = RoutesConfig
   { gateways :: [GatewayConfig] -- ^ List of command gateway configurations
-  , searches :: [SearchConfig]  -- ^ List of search handler configurations
   , files    :: [FilesConfig]   -- ^ List of file server configurations
   } deriving (Show, Eq, Generic)
 
@@ -50,12 +48,6 @@ data GatewayConfig = GatewayConfig
   , menu      :: Bool
   , preamble  :: Maybe [T.Text]
   , postamble :: Maybe [T.Text]
-  } deriving (Show, Eq, Generic)
-
--- | Configuration for a built-in search handler.
-data SearchConfig = SearchConfig
-  { selector :: T.Text
-  , path     :: FilePath
   } deriving (Show, Eq, Generic)
 
 -- | Configuration for a built-in file server.
@@ -73,18 +65,11 @@ data FilesConfig = FilesConfig
 routesConfigCodec :: TomlCodec RoutesConfig
 routesConfigCodec = RoutesConfig
     <$> Toml.list gatewayConfigCodec "gateway" .= (.gateways)
-    <*> Toml.list searchConfigCodec  "search"  .= (.searches)
     <*> Toml.list filesConfigCodec   "files"   .= (.files)
 
 -- | Codec for a single command gateway configuration.
 gatewayConfigCodec :: TomlCodec GatewayConfig
 gatewayConfigCodec = Toml.genericCodec
-
--- | Codec for a single search handler configuration.
-searchConfigCodec :: TomlCodec SearchConfig
-searchConfigCodec = SearchConfig
-    <$> Toml.text "selector" .= (.selector)
-    <*> Toml.string "path"   .= (.path)
 
 -- | Codec for a single file server configuration.
 filesConfigCodec :: TomlCodec FilesConfig
@@ -119,7 +104,6 @@ readRoutesConfig path = catchIOError
       Right config -> do
         -- Optional: Log what was loaded
         forM_ (config.gateways) $ \c -> putStrLn $ "Loaded gateway: " ++ T.unpack c.selector
-        forM_ (config.searches) $ \c -> putStrLn $ "Loaded search: " ++ T.unpack c.selector
         forM_ (config.files)    $ \c -> putStrLn $ "Loaded files: " ++ T.unpack c.selector
         pure $ Right config
   )
@@ -130,7 +114,6 @@ readRoutesConfig path = catchIOError
 buildRoutes :: RoutesConfig -> T.Text -> Int -> [Route]
 buildRoutes config host port =
     (buildGatewayRoutes $ config.gateways) ++
-    (buildSearchRoutes  (config.searches) host port) ++
     (buildFileRoutes    (config.files)    host port)
 
 -- | Builds routes for command gateways.
@@ -142,13 +125,6 @@ buildGatewayRoutes = concatMap createGatewayRoute
       in if config.wildcard
           then [onWildcard config.selector handler]
           else [on config.selector handler]
-
--- | Builds routes for search handlers.
-buildSearchRoutes :: [SearchConfig] -> T.Text -> Int -> [Route]
-buildSearchRoutes configs host port = concatMap (createSearchRoute host port) configs
-  where
-    createSearchRoute host port config =
-      [on config.selector (createSearchHandler config host port)]
 
 -- | Builds routes for file servers.
 buildFileRoutes :: [FilesConfig] -> T.Text -> Int -> [Route]
@@ -166,12 +142,6 @@ createFileHandler config host port request =
   case request.reqWildcard of
     Just wildcard -> serveDirectory host port config.path config.selector wildcard Nothing
     Nothing       -> pure $ TextResponse "Error: No path provided for file handler."
-
--- | Creates a handler for a search handler configuration.
-createSearchHandler :: SearchConfig -> T.Text -> Int -> Handler
-createSearchHandler config host port request =
-  let query = fromMaybe "" request.reqQuery
-  in serveSearch config.path host port query
 
 -- | Creates a handler for a command gateway configuration.
 createCommandHandler :: GatewayConfig -> Handler

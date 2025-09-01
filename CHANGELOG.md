@@ -8,6 +8,10 @@ and this project adheres to the
 
 ## Unreleased
 
+### Removed
+
+* Built-in search. However, I included an example of implementing search as a `[[gateway]]` using a script that uses `ryvm`.
+
 ## 0.2.0.0 - 2025-08-28
 
 ### Added

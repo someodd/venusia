@@ -14,7 +14,7 @@ Venusia is a complete framework for creating modern Gopherholes.
 #### As a Library
 
   * **Declarative Routing:** Easily define routes with support for wildcards.
-  * **Built-in Handlers:** Ready-to-use handlers for directories, files, and search.
+  * **Built-in Handlers:** Ready-to-use handlers for directories and files.
   * **`.gophermap` Support:** Automatically serves `.gophermap` files for custom menus.
   * **Menu Builder:** An intuitive DSL for creating Gopher menus.
 
@@ -63,6 +63,8 @@ The quickest way to start is with the `venusia-exe` daemon.
     menu = true
     ```
 
+    TODO: You can also use wildcards--a neat feature, I need to show an example!
+
 2.  **Run the `watch` command:**
 
     Point the watcher to your directory, host, and port.
@@ -72,6 +74,50 @@ The quickest way to start is with the `venusia-exe` daemon.
     ```
 
     Your Gopher server is now live. Changes to your files or `routes.toml` will be reflected instantly.
+
+### What about search support?
+
+You can use [my ryvm software](https://github.com/someodd/ryvm) as a gateway like this, in your `routes.toml`:
+
+```
+[[gateway]]
+selector = "/search"
+search = true
+wildcard = false
+menu = false
+command = "/var/gopher/source/search.sh"
+arguments = ["$search"]
+```
+
+And here's the `/var/gopher/source/search.sh` (don't forget to `chmod +X`!):
+
+```
+#!/usr/bin/env bash
+# search2gophermap.sh <search> [HOST] [PORT]
+s="$1"; h="${2:-gopher.someodd.zip}"; p="${3:-70}"
+cd /var/gopher/out || exit 1
+
+ryvm --ext-whitelist txt --make-relative . "$s" \
+| awk -F'\t' -v h="$h" -v p="$p" '
+function is_gophermap(path,   l,ok){
+  ok=0
+  if ((getline l < path) > 0) {
+    sub(/\r$/,"",l)
+    if (l ~ /^.{2,}\t[^\t]+\t[^\t]+\t[^\t]+$/) ok=1
+  }
+  close(path)
+  return ok
+}
+{
+  file=$1
+  sel = ($2 && $2 != "") ? $2 : file
+  score = $3
+  snip = $4
+
+  t = is_gophermap(file) ? "1" : "0"     # 1 = menu (gophermap), 0 = text
+  printf "%s%s — %s [score %s]\t%s\t%s\t%s\r\n", t, file, snip, score, sel, h, p
+}'
+```
 
 ### Using the Library
 

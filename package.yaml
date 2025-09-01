@@ -48,7 +48,6 @@ library:
   - bytestring
   - containers
   - directory
-  - ryvm
   - filepath
   - time
   - network
