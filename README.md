@@ -90,7 +90,7 @@ And here's the `/var/gopher/source/search.sh` (don't forget to `chmod +X`!):
 #!/usr/bin/env bash
 # search.sh <search> [HOST] [PORT]
 s="$1"; h="${2:-gopher.someodd.zip}"; p="${3:-70}"
-cd /var/gopher/out || exit 1
+cd /var/gopher/output || exit 1
 
 ryvm --ext-whitelist txt --make-relative . "$s" \
 | awk -F'\t' -v h="$h" -v p="$p" '
