@@ -110,7 +110,7 @@ function is_gophermap(path,   l,ok){
   snip = $4
 
   t = is_gophermap(file) ? "1" : "0"     # 1 = menu (gophermap), 0 = text
-  printf "%s%s — %s [score %s]\t%s\t%s\t%s\r\n", t, file, snip, score, sel, h, p
+  printf "%s%s — %s [score %s]\t%s\t%s\t%s\r\n", t, sel, snip, score, file, h, p
 }'
 ```
 
