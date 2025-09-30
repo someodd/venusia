@@ -46,6 +46,7 @@ data GatewayConfig = GatewayConfig
   , arguments :: [T.Text]
   , wildcard  :: Bool
   , menu      :: Bool
+  -- ^ Transform the output into a gophermap (turn each line into an info item type
   , preamble  :: Maybe [T.Text]
   , postamble :: Maybe [T.Text]
   } deriving (Show, Eq, Generic)
@@ -148,32 +149,40 @@ createCommandHandler :: GatewayConfig -> Handler
 createCommandHandler config request =
   let
     args = config.arguments
+    -- NOTE: so much un/repacking! why converting to string, here, also?
     processedArgs = map (substituteArgPlaceholders request.reqQuery request.reqWildcard . T.unpack) args
     -- A search is implied if the $search placeholder is used.
     isSearch = any (T.isInfixOf "$search") args
     canExecute = not (isSearch && request.reqQuery == Nothing)
+    preamble = map (substitutePlaceholders request.reqQuery request.reqWildcard) <$> config.preamble
+    postamble = map (substitutePlaceholders request.reqQuery request.reqWildcard) <$> config.postamble
   in
     if canExecute
-      then executeProcessWithArgs config processedArgs
+      then executeProcessWithArgs config processedArgs preamble postamble
       else pure $ TextResponse $ error' "A search query is required for this gateway."
 
 
 -- Process Execution and Helpers ---
 
+-- | Replace $wildcard and $search appropriately.
+substitutePlaceholders :: Maybe T.Text -> Maybe T.Text -> T.Text -> T.Text
+substitutePlaceholders searchValue wildcardValue =
+    T.replace "$wildcard" (fromMaybe "" wildcardValue)
+      . T.replace "$search" (fromMaybe "" searchValue)
+
 -- | Substitute placeholders like $search and $wildcard in command arguments.
 substituteArgPlaceholders :: Maybe T.Text -> Maybe T.Text -> String -> String
 substituteArgPlaceholders searchValue wildcardValue =
-    T.unpack . T.replace "$wildcard" (fromMaybe "" wildcardValue)
-             . T.replace "$search" (fromMaybe "" searchValue)
-             . T.pack
+    T.unpack . substitutePlaceholders searchValue wildcardValue . T.pack
 
+-- todo: could be looser coupled
 -- | Execute a process with arguments and format the response.
-executeProcessWithArgs :: GatewayConfig -> [String] -> IO Response
-executeProcessWithArgs config args = do
+executeProcessWithArgs :: GatewayConfig -> [String] -> Maybe [T.Text] -> Maybe [T.Text] -> IO Response
+executeProcessWithArgs config args preamble postamble = do
     result <- try (P.readProcess (T.unpack config.command) args "") :: IO (Either SomeException String)
     let contents = case result of
           Left err  -> [error' . T.pack $ "Process execution failed: " ++ show err]
           Right out -> if config.menu
                          then info . T.pack <$> lines out
                          else [T.pack out]
-    pure . TextResponse . render $ fromMaybe [] config.preamble ++ contents ++ fromMaybe [] config.postamble
+    pure . TextResponse . render $ fromMaybe [] preamble ++ contents ++ fromMaybe [] postamble
