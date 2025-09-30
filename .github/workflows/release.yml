@@ -73,8 +73,8 @@ jobs:
         set -e
         if ! getent group venusia >/dev/null; then groupadd --system venusia; fi
         if ! id -u venusia >/dev/null 2>&1; then useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin -g venusia venusia; fi
-        install -d -m 0755 /var/gopher
-        install -d -o venusia -g venusia -m 0750 /var/gopher/source
+        install -d -m 0775 /var/gopher
+        install -d -o venusia -g venusia -m 0770 /var/gopher/source
         EOF
         chmod +x ./pre-install.sh
         cat <<'EOF' > ./post-install.sh
