@@ -8,6 +8,8 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.4.0.0 - 2025-09-30
+
 ### Added
 
 * You can now use $wildcard and $search in the preamble and postamble
