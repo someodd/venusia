@@ -1,0 +1,3 @@
+# Gateway Scripts (examples)
+
+This directory contains small, single-file gateway scripts (mostly Haskell `runghc` style) that demonstrate how to extend Venusia with dynamic endpoints. Each script is purposely minimal, self-contained, and safe to drop into a Venusia `routes.toml` via `[[gateway]]` with `command` pointing at the script and `arguments` using `$wildcard`/`$search` as needed. They’re intended as reference implementations you can copy, tweak, and deploy.
