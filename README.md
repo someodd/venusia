@@ -41,7 +41,7 @@ The quickest way to start is with the `venusia-exe` daemon.
     # NOTE: Do not use a wildcard (*) in the files selector.
     [[files]]
     selector = "/files/"
-    path = "./"
+    path = "/home/user/gopherhole/"
 
     # Gateway to the 'cowsay' command.
     [[gateway]]
@@ -60,7 +60,7 @@ The quickest way to start is with the `venusia-exe` daemon.
 
     TODO: You can also use wildcards--a neat feature, I need to show an example!
 
-    Note that for the above TOML config nothing is mapped to /, so to test try something like `gopher://localhost/1/files/`.
+    Note that for the above TOML config nothing is mapped to /, so to test try something like `gopher://localhost/1/files/`. Make sure to change the `path` in the example (for `[[files]]`) to a directory you wanna serve.
 
 2.  **Run the `watch` command:**
 
