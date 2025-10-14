@@ -55,6 +55,8 @@ The quickest way to start is with the `venusia-exe` daemon.
 
     Note that for the above TOML config nothing is mapped to /, so to test try something like `gopher://localhost/1/files/`. Make sure to change the `path` in the example (for `[[files]]`) to a directory you wanna serve.
 
+    You may also want to know in Gopher the root selector is actually blank `""` and not `"/"`.
+
 2.  **Run the `watch` command:**
 
     Point the watcher to your directory, host, and port.
