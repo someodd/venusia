@@ -60,6 +60,8 @@ The quickest way to start is with the `venusia-exe` daemon.
 
     TODO: You can also use wildcards--a neat feature, I need to show an example!
 
+    Note that for the above TOML config nothing is mapped to /, so to test try something like `gopher://localhost/1/files/`.
+
 2.  **Run the `watch` command:**
 
     Point the watcher to your directory, host, and port.
