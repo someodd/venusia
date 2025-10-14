@@ -37,8 +37,6 @@ The quickest way to start is with the `venusia-exe` daemon.
     ```toml
     # routes.toml
 
-    # Serves files from the current directory at the /files/ selector.
-    # NOTE: Do not use a wildcard (*) in the files selector.
     [[files]]
     selector = "/files/"
     path = "/home/user/gopherhole/"
