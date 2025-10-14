@@ -47,13 +47,8 @@ The quickest way to start is with the `venusia-exe` daemon.
     command = "cowsay"
     arguments = ["$search"] # Takes a search query
     menu = true
-
-    # Gateway to the 'curl' command for weather.
-    [[gateway]]
-    selector = "/gateway/weather"
-    command = "curl"
-    arguments = ["https://wttr.in/$search?format=v2"]
-    menu = true
+    search = true
+    wildcard = false
     ```
 
     TODO: You can also use wildcards--a neat feature, I need to show an example!
