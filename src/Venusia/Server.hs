@@ -12,8 +12,7 @@ module Venusia.Server (
   -- * Default handlers
   , noMatchHandler
   -- * Server setup and running
-  , serve
-  , serveHotReload -- EXPORT THE NEW FUNCTION
+  , serveHotReload
 ) where
 
 import Venusia.MenuBuilder
@@ -22,10 +21,19 @@ import qualified Network.Socket.ByteString as NBS
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Control.Concurrent (forkIO, MVar, readMVar) -- CHANGED: Add MVar imports
-import Control.Monad (forever, void)
+import Control.Monad (forever, void, unless)
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text as T
 import Prelude hiding (error)
+import System.IO (withFile, IOMode (..))
+
+-- | Size of chunks to read when streaming files.
+--
+-- I think 32 KB is a sweet spot for low memory footprint, good throughput, minimal
+-- syscall overhead, avoiding blowing L1/L2 caches, matches typical kernel socket buffer
+-- sizes.  It's (?) widely used across nginx, Apache, Haskell Warp, etc.
+chunkSize :: Int
+chunkSize = 32768
 
 -- | A Gopher request with selector and optional query
 data Request = Request
@@ -40,7 +48,12 @@ data Request = Request
 -- | A response can either be text or binary data
 data Response
   = TextResponse T.Text
+  -- ^ In-memory text response.
   | BinaryResponse BS.ByteString
+  -- ^ In-memory bytes.
+  | FileResponse FilePath
+  -- ^ Serve a file from disk. What you should probably use by default as not to have a
+  -- giant reserved heap (so we can have a constant size memory)
 
 -- | A handler processes a request and returns a response
 type Handler = Request -> IO Response
@@ -121,43 +134,8 @@ responseToByteString :: Response -> BS.ByteString
 responseToByteString (TextResponse text) = TE.encodeUtf8 text
 responseToByteString (BinaryResponse bytes) = bytes
 
--- ... (Request, Response, Handler, Route, parseRequest, on, onWildcard, dispatch, noMatchHandler, responseToByteString all remain exactly the same) ...
 
--- | The original, simple server function.
-serve
-  :: String -> Handler -> [Route] -> IO ()
-serve port noMatch routes = withSocketsDo $ do
-  addr <- resolve port
-  sock <- open addr
-  putStrLn $ "Gopher server running on port " ++ port
-  forever $ do
-    (conn, _) <- accept sock
-    void $ forkIO $ handleConn noMatch routes conn
-  where
-    resolve p = do
-      let hints = defaultHints { addrFlags = [AI_PASSIVE], addrSocketType = Stream }
-      addr:_ <- getAddrInfo (Just hints) Nothing (Just p)
-      return addr
-    open addr = do
-      sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-      setSocketOption sock ReuseAddr 1
-      bind sock (addrAddress addr)
-      listen sock 10
-      return sock
-
--- | Handle an individual connection (original version).
-handleConn :: Handler -> [Route] -> Socket -> IO ()
-handleConn noMatch routes sock = do
-  req <- NBS.recv sock 1024
-  let trimmedReq = BS8.strip req
-  -- putStrLn $ "Received request: " ++ show trimmedReq -- This can be noisy
-  response <- dispatch noMatch routes (TE.decodeUtf8 trimmedReq)
-  NBS.sendAll sock (responseToByteString response)
-  close sock
-
---- NEW HOT-RELOADABLE SERVER ---
-
--- | A new version of serve that supports hot-reloading routes.
+-- | Main server loop with hot-reloading support.
 serveHotReload
   :: String         -- ^ Port to listen on.
   -> Handler      -- ^ Handler for invalid selectors.
@@ -191,5 +169,19 @@ handleConnHotReload noMatch routesMVar sock = do
   -- Read the most current routes from the MVar for every request.
   currentRoutes <- readMVar routesMVar
   response <- dispatch noMatch currentRoutes (TE.decodeUtf8 trimmedReq)
-  NBS.sendAll sock (responseToByteString response)
+  case response of
+    FileResponse fp -> streamFile fp sock
+    _               ->
+      NBS.sendAll sock (responseToByteString response)
   close sock
+
+-- | Stream a file over the socket in chunks. This helps the heap not balloon in size.
+streamFile :: FilePath -> Socket -> IO ()
+streamFile fp sock =
+    withFile fp ReadMode $ \h -> let
+        loop = do
+            chunk <- BS.hGetSome h chunkSize
+            unless (BS.null chunk) $ do
+                NBS.sendAll sock chunk
+                loop
+        in loop

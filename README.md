@@ -53,6 +53,18 @@ The quickest way to start is with the `venusia-exe` daemon.
 
     TODO: You can also use wildcards--a neat feature, I need to show an example!
 
+    I sugguest trying out using `.lhs` (Literate Haskell) scripts with something like:
+
+    ```toml
+    [[gateway]]
+    selector = "/gateway/something"
+    search   = false
+    menu = false
+    wildcard = false
+    command  = "runghc"
+    arguments = ["/var/gopher/output/example.lhs"]
+    ```
+
     Note that for the above TOML config nothing is mapped to /, so to test try something like `gopher://localhost/1/files/`. Make sure to change the `path` in the example (for `[[files]]`) to a directory you wanna serve.
 
     You may also want to know in Gopher the root selector is actually blank `""` and not `"/"`.
@@ -134,6 +146,9 @@ To build a custom server, use Venusia in your own Haskell project.
     import Venusia.SearchHandler
     import qualified Data.Text as T
 
+    import Control.Concurrent.MVar
+    import Data.Maybe (fromMaybe)
+
     host :: T.Text
     host = "localhost"
 
@@ -145,17 +160,26 @@ To build a custom server, use Venusia in your own Haskell project.
     routes =
       [ on "/hello" $ \_ ->
           return $ TextResponse "Hello, gopher!\r\n"
+
       , onWildcard "/echo/*" $ \req ->
-          pure $ TextResponse $ req.reqWildcard & fromMaybe "Nothing."
+          pure $ TextResponse $ fromMaybe "Nothing." (req.reqWildcard)
+
       , onWildcard "/files/*" $ \req ->
           case req.reqWildcard of
-            Just path -> serveDirectory host port "/var/gopher" "/files/" path Nothing
-            Nothing   -> pure $ TextResponse "No path provided."
+            Just path ->
+              serveDirectory host port "/var/gopher" "/files/" path Nothing
+            Nothing ->
+              pure $ TextResponse "No path provided."
       ]
 
     -- Main entry point
     main :: IO ()
-    main = serve (show port) noMatchHandler routes
+    main = do
+      -- Wrap routes in MVar because serveHotReload requires mutable route list
+      routesVar <- newMVar routes
+
+      -- Start the new hot-reloadable, streaming-safe server
+      serveHotReload (show port) noMatchHandler routesVar
     ```
 
 ## Debian Packages & `systemd`

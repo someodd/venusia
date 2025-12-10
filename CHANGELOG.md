@@ -8,6 +8,17 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.5.0.0 - 2025-12-09
+
+### Changed
+
+* Space-efficient streaming of files so the GHC heap doesn't balloon after sending large files! This is what the filehandler now uses.
+
+### Removed
+
+* Old `serve` function!
+* Examples
+
 ## 0.4.0.0 - 2025-09-30
 
 ### Added

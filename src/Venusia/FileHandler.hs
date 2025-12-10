@@ -230,4 +230,4 @@ serveDirectory host port root selectorRoot requestedPath sortBy = do
           TextResponse <$> listDirectoryAsGophermap host port root selectorRoot pathCanonical sortBy
         else do
           -- just serve the file
-          BinaryResponse <$> BL.readFile pathCanonical
+          pure $ FileResponse pathCanonical
