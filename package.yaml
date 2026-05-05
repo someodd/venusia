@@ -93,5 +93,19 @@ tests:
     - -threaded
     - -rtsopts
     - -with-rtsopts=-N
+    default-extensions:
+    - OverloadedStrings
+    - OverloadedRecordDot
+    default-language: GHC2021
     dependencies:
     - Venusia
+    - base
+    - bytestring
+    - text
+    - network
+    - tasty
+    - tasty-quickcheck
+    - tasty-hunit
+    - QuickCheck
+    - quickcheck-instances
+    - temporary

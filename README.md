@@ -182,6 +182,100 @@ To build a custom server, use Venusia in your own Haskell project.
       serveHotReload (show port) noMatchHandler routesVar
     ```
 
+## Response types
+
+`Venusia.Server.Response` has four constructors. Pick the one whose memory model matches your payload:
+
+| Use case | Constructor | Memory |
+|---|---|---|
+| Menus, errors, small generated text | `TextResponse` | Held in memory |
+| Small in-memory binary blob | `BinaryResponse` | Held in memory |
+| Static file on disk (any size) | `FileResponse` | Constant (32 KB chunks) |
+| Generated, piped, or unbounded content | `StreamingResponse` | Constant; producer chooses pacing |
+
+### Streaming responses
+
+`StreamingResponse` takes a callback `(BS.ByteString -> IO ()) -> IO ()`. The producer is given a `send` action and runs to completion. Memory stays constant regardless of how much is emitted, the producer can use `bracket` to own its own resources, and a client disconnect surfaces as an exception from `send` that tears the producer down cleanly.
+
+**Example: a counter that emits one line per second**
+
+```haskell
+import Control.Concurrent (threadDelay)
+import qualified Data.ByteString.Char8 as BS8
+
+countingRoute :: Route
+countingRoute = on "/count" $ \_ ->
+  pure $ StreamingResponse $ \send ->
+    mapM_ (\n -> send (BS8.pack ("line " <> show n <> "\r\n"))
+                 >> threadDelay 1000000) [1 :: Int .. 10]
+```
+
+**Example: relay an upstream audio stream over Gopher**
+
+This is the kind of thing the type was built for — proxy an Icecast/SHOUTcast MP3 stream as Gopher item type `9`. The `bracket` ensures the upstream connection is closed whether the listener disconnects, the upstream drops, or anything else throws:
+
+```haskell
+import Control.Exception (bracket)
+import Network.Socket (close)
+import Venusia.Server (streamFromHandle)
+-- …open a TCP socket to the upstream and convert it to a Handle…
+
+radioRoute :: Route
+radioRoute = on "/radio" $ \_ ->
+  pure $ StreamingResponse $ \send ->
+    bracket openUpstream close $ \upHandle ->
+      streamFromHandle upHandle send
+```
+
+Use `streamFromHandle` (exported from `Venusia.Server`) for the common case of streaming from any `Handle` in 32 KB pieces.
+
+### Notes on long-lived streaming
+
+A few things to know if you're wiring something like a radio relay:
+
+* The server caps in-flight connections at 256 (see `maxConcurrentConnections` in `Venusia.Server`). If you expect more concurrent listeners, raise both that constant and the host's `ulimit -n`.
+* Each accepted socket has Linux `TCP_USER_TIMEOUT` set to 120 s, so a stuck send fails after two minutes rather than pinning a thread + FD forever. This is the only line of defence against a slow-reading client; there is no read-side timeout once the response is in flight, since the producer's pacing is intentional.
+* For hostile-network deployments, putting Venusia behind a reverse proxy that can enforce per-connection budgets is still recommended.
+
+## Verification
+
+### Property and integration tests
+
+Run the full suite:
+
+```bash
+stack test
+```
+
+The suite uses [`tasty`](https://hackage.haskell.org/package/tasty) and is split into three groups:
+
+* **`Venusia.Server`** — QuickCheck properties for `sanitizeSelector` (idempotent, no CR/LF in output, truncates at first line ending), `parseRequest` (selector / query split), and the `on` / `onWildcard` route matchers (exact match, wildcard capture, prefix/suffix shape).
+* **`Venusia.MenuBuilder`** — QuickCheck properties for `item` (type char prefix, CRLF suffix, exactly three tabs), `menu` / `render` (terminator), and shape tests for `info` / `error'` / `gophermapRender`.
+* **`integration`** — end-to-end tests bound to an ephemeral local socket. Each `Response` constructor is round-tripped through a real TCP connection (`TextResponse`, `BinaryResponse`, `FileResponse` with a multi-256KB file, `StreamingResponse` over an 8 MB generated body). RFC behaviours (embedded CRLF in the request line, empty selector, type-7 tab queries) are exercised. FD-leak resilience is checked by hammering a route whose streaming producer throws partway through, plus 200 sequential round-trips.
+
+### LiquidHaskell refinements
+
+The codebase has a small set of [LiquidHaskell](https://ucsd-progsys.github.io/liquidhaskell/) refinements at the *boundaries* — the inputs and outputs that interact with the outside world. They sit in `{-@ ... @-}` comments which GHC ignores; running `liquid` checks them.
+
+Currently refined:
+
+* `chunkSize :: {v:Int | v > 0}` (the streaming chunk size)
+* `readTimeoutMicros :: {v:Int | v > 0}` (the slowloris guard)
+
+Documented as extension points (not yet active until a `containsCRLF` measure is defined):
+
+* `sanitizeSelector` postcondition — the output contains no CR or LF byte. The corresponding QuickCheck property runs on every `stack test`.
+
+To verify locally:
+
+```bash
+# install the verifier (one-time; needs z3 on PATH)
+cabal install liquidhaskell
+
+# check a module
+liquid -i src src/Venusia/Server.hs
+```
+
 ## Debian Packages & `systemd`
 
 For production, [Venusia offers Debian packages](https://github.com/someodd/venusia/releases) with `systemd` support to run as a managed daemon.

@@ -11,8 +11,15 @@ module Venusia.Server (
   , onWildcard
   -- * Default handlers
   , noMatchHandler
+  -- * Streaming helpers
+  , streamFromHandle
+  , chunkSize
   -- * Server setup and running
   , serveHotReload
+  , runOnSocket
+  -- * Internal (exported for testing)
+  , parseRequest
+  , sanitizeSelector
 ) where
 
 import Venusia.MenuBuilder
@@ -20,20 +27,70 @@ import Network.Socket
 import qualified Network.Socket.ByteString as NBS
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import Control.Concurrent (forkIO, MVar, readMVar) -- CHANGED: Add MVar imports
-import Control.Monad (forever, void, unless)
+import Control.Concurrent (forkFinally, MVar, readMVar)
+import Control.Concurrent.QSem (newQSem, waitQSem, signalQSem)
+import Control.Exception
+  ( IOException
+  , SomeAsyncException
+  , SomeException
+  , catch
+  , displayException
+  , finally
+  , fromException
+  , throwIO
+  )
+import Control.Monad (forever, unless)
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text as T
 import Prelude hiding (error)
-import System.IO (withFile, IOMode (..))
+import System.IO (Handle, IOMode (..), hPutStrLn, stderr, withFile)
+import System.Timeout (timeout)
 
 -- | Size of chunks to read when streaming files.
 --
 -- I think 32 KB is a sweet spot for low memory footprint, good throughput, minimal
 -- syscall overhead, avoiding blowing L1/L2 caches, matches typical kernel socket buffer
 -- sizes.  It's (?) widely used across nginx, Apache, Haskell Warp, etc.
+{-@ chunkSize :: {v:Int | v > 0} @-}
 chunkSize :: Int
 chunkSize = 32768
+
+-- | How long the server will wait for a client to send the request line before
+-- giving up. Defends against slowloris-style holders that open a connection and
+-- never speak. Only applies to the initial @recv@; once a response is being
+-- produced the producer sets the pace.
+{-@ readTimeoutMicros :: {v:Int | v > 0} @-}
+readTimeoutMicros :: Int
+readTimeoutMicros = 30 * 1000 * 1000
+
+-- | Maximum number of in-flight connections accepted at once.
+--
+-- Once this many handlers are running, the accept loop blocks until one
+-- finishes. This caps FD usage and per-connection memory under load (or
+-- attack — without a cap a flood of connections can exhaust the server's
+-- file-descriptor limit before each handler completes).
+--
+-- 256 leaves headroom against the typical 1024 default soft @ulimit -n@.
+-- Operators serving more concurrent traffic should both raise that limit
+-- and edit this constant.
+{-@ maxConcurrentConnections :: {v:Int | v > 0} @-}
+maxConcurrentConnections :: Int
+maxConcurrentConnections = 256
+
+-- | Linux @TCP_USER_TIMEOUT@: bound on how long the kernel waits for an ACK
+-- before declaring the connection dead. This is the only line of defence
+-- against a slow-reading client that holds a streaming response open
+-- indefinitely (the read-side 'readTimeoutMicros' guard doesn't apply once
+-- a response is being written).
+--
+-- Set to two minutes — generous enough that legitimate clients on flaky
+-- mobile links survive, tight enough that an attacker's silently-stalled
+-- connection is reaped instead of pinning a thread + FD forever.
+--
+-- No-op on platforms that don't support the option (BSD, macOS).
+{-@ connectionWriteTimeoutMillis :: {v:Int | v > 0} @-}
+connectionWriteTimeoutMillis :: Int
+connectionWriteTimeoutMillis = 120 * 1000
 
 -- | A Gopher request with selector and optional query
 data Request = Request
@@ -43,17 +100,39 @@ data Request = Request
   -- ^ Captured wildcard content (if any)
   , reqQuery    :: Maybe T.Text
   -- ^ The query part (after tab, if any)
-  } deriving (Show)
+  } deriving (Show, Eq)
 
--- | A response can either be text or binary data
+-- | A response that the server will write back to the client.
+--
+-- Pick the constructor that matches your payload's lifecycle:
+--
+-- * 'TextResponse' / 'BinaryResponse' — small, in-memory payloads (menus,
+--   error pages, single short blobs). Simple but materialises everything in
+--   memory before the first byte goes out.
+-- * 'FileResponse' — a static file on disk. Streamed in 'chunkSize' chunks,
+--   so memory stays constant regardless of file size.
+-- * 'StreamingResponse' — anything else: generated content, a process pipe,
+--   a TCP relay (e.g. an internet-radio stream proxied over Gopher), a live
+--   tail. Memory stays constant; the producer chooses when each chunk goes
+--   out.
 data Response
   = TextResponse T.Text
   -- ^ In-memory text response.
   | BinaryResponse BS.ByteString
   -- ^ In-memory bytes.
   | FileResponse FilePath
-  -- ^ Serve a file from disk. What you should probably use by default as not to have a
-  -- giant reserved heap (so we can have a constant size memory)
+  -- ^ Serve a file from disk. Streamed in fixed-size chunks; constant memory.
+  | StreamingResponse ((BS.ByteString -> IO ()) -> IO ())
+  -- ^ Constant-memory streaming response. The producer is given a @send@
+  -- action and runs until it returns (clean end-of-stream) or throws (client
+  -- gone, or producer error). The producer owns its own resources and should
+  -- wrap acquisitions in 'Control.Exception.bracket' so cleanup runs whether
+  -- the stream ends normally, the client disconnects, or an exception is
+  -- raised. Example (relay an upstream HTTP audio stream):
+  --
+  -- > StreamingResponse $ \send ->
+  -- >   bracket (connectUpstream url) hClose $ \h ->
+  -- >     streamFromHandle h send
 
 -- | A handler processes a request and returns a response
 type Handler = Request -> IO Response
@@ -64,19 +143,38 @@ data Route = Route
   , runHandler :: Handler
   }
 
--- | Parse a raw Gopher request into selector and query parts
+-- | Parse a raw Gopher request into selector and query parts.
+--
+-- The request line is split on the first horizontal tab:
+--
+-- * @parseRequest "sel"@                    @= ("sel", Nothing)@
+-- * @parseRequest "sel\\tq"@                @= ("sel", Just "q")@
+-- * @parseRequest "sel\\tq1\\tq2"@          @= ("sel", Just "q1")@ (extra tabs are dropped)
+-- * @parseRequest ""@                       @= ("", Nothing)@
 parseRequest :: T.Text -> (T.Text, Maybe T.Text)
-parseRequest raw = 
+parseRequest raw =
   case T.split (== '\t') raw of
     (sel:q:_) -> (sel, Just q)
     [sel]     -> (sel, Nothing)
     _         -> (raw, Nothing)
 
+-- | Trim the request bytes to just the first line (per RFC 1436 the request
+-- line ends at CRLF; anything after is not part of the selector). Strips
+-- surrounding whitespace too.
+--
+-- Defends against embedded CR/LF being treated as part of the selector
+-- (log-injection / response-smuggling) and clients that send bare @LF@
+-- instead of @CRLF@. The "no CR/LF in output" invariant is enforced by a
+-- QuickCheck property in @Test.Venusia.Server@; see the README for the
+-- corresponding LiquidHaskell extension-point spec.
+sanitizeSelector :: BS.ByteString -> BS.ByteString
+sanitizeSelector = BS8.strip . BS8.takeWhile (\c -> c /= '\r' && c /= '\n')
+
 -- | Create a route for exact selector matching
 on :: T.Text -> Handler -> Route
 on path handler = Route matcher handler
   where
-    matcher raw = 
+    matcher raw =
       let (sel, q) = parseRequest raw
       in if sel == path
          then Just $ Request sel Nothing q
@@ -94,11 +192,11 @@ onWildcard pattern handler = Route matcher handler
            Just afterPrefix ->
              -- Now check if the remaining part ends with suffix
              if T.isSuffixOf suffix afterPrefix
-               then 
+               then
                  -- Calculate the part that matched the wildcard
                  let wildcardLen = T.length afterPrefix - T.length suffix
                      wildcardPart = T.take wildcardLen afterPrefix
-                 in Just $ Request 
+                 in Just $ Request
                       { reqSelector = sel
                       , reqWildcard = Just wildcardPart
                       , reqQuery = q
@@ -129,11 +227,56 @@ noMatchHandler request =
   return . TextResponse . render $
     [error' $ "Not found: " <> request.reqSelector]
 
--- | Convert a Response to ByteString for sending over the wire
-responseToByteString :: Response -> BS.ByteString
-responseToByteString (TextResponse text) = TE.encodeUtf8 text
-responseToByteString (BinaryResponse bytes) = bytes
+-- | Stream from an open 'Handle' in 'chunkSize'-byte pieces, calling @send@
+-- on each non-empty chunk. Returns when the handle hits EOF.
+streamFromHandle :: Handle -> (BS.ByteString -> IO ()) -> IO ()
+streamFromHandle h send = loop
+  where
+    loop = do
+      chunk <- BS.hGetSome h chunkSize
+      unless (BS.null chunk) $ do
+        send chunk
+        loop
 
+-- | Write a 'Response' to the connected socket using the appropriate strategy.
+sendResponse :: Socket -> Response -> IO ()
+sendResponse sock response = case response of
+  TextResponse t      -> NBS.sendAll sock (TE.encodeUtf8 t)
+  BinaryResponse b    -> NBS.sendAll sock b
+  FileResponse fp     -> withFile fp ReadMode $ \h ->
+                           streamFromHandle h (NBS.sendAll sock)
+  StreamingResponse f -> f (NBS.sendAll sock)
+
+-- | Set a socket option, silently ignoring \"not supported\" errors so that
+-- platform-specific options (like @TCP_USER_TIMEOUT@ on Linux) don't crash
+-- the server when the kernel doesn't recognise them.
+trySetSocketOption :: Socket -> SocketOption -> Int -> IO ()
+trySetSocketOption sock opt val =
+  setSocketOption sock opt val `catch` (\(_ :: IOException) -> pure ())
+
+-- | Run the accept loop on an already-bound, listening socket.
+--
+-- Useful when you need to control socket setup yourself — for example,
+-- binding to an ephemeral port for tests, dropping privileges before
+-- accepting, or wiring TLS in front. 'serveHotReload' is the convenient
+-- wrapper that does the bind/listen for you.
+--
+-- Concurrency is bounded by 'maxConcurrentConnections' via a semaphore: when
+-- the cap is reached, the loop blocks on @accept@ until an in-flight
+-- handler finishes. This caps FD usage under connection floods. Each
+-- accepted socket also has 'connectionWriteTimeoutMillis' applied as a
+-- write-side timeout (Linux @TCP_USER_TIMEOUT@; no-op elsewhere) so a
+-- slow-reading client cannot pin a streaming response forever.
+runOnSocket :: Socket -> Handler -> MVar [Route] -> IO ()
+runOnSocket sock noMatch routesMVar = do
+  sem <- newQSem maxConcurrentConnections
+  forever $ do
+    waitQSem sem
+    (conn, _) <- accept sock
+    trySetSocketOption conn UserTimeout connectionWriteTimeoutMillis
+    forkFinally
+      (handleConnHotReload noMatch routesMVar conn)
+      (\_ -> signalQSem sem)
 
 -- | Main server loop with hot-reloading support.
 serveHotReload
@@ -145,10 +288,7 @@ serveHotReload port noMatch routesMVar = withSocketsDo $ do
   addr <- resolve port
   sock <- open addr
   putStrLn $ "Gopher server (hot-reload enabled) running on port " ++ port
-  forever $ do
-    (conn, _) <- accept sock
-    -- Each connection now gets the MVar to read the latest routes.
-    void $ forkIO $ handleConnHotReload noMatch routesMVar conn
+  runOnSocket sock noMatch routesMVar
   where
     resolve p = do
       let hints = defaultHints { addrFlags = [AI_PASSIVE], addrSocketType = Stream }
@@ -157,31 +297,39 @@ serveHotReload port noMatch routesMVar = withSocketsDo $ do
     open addr = do
       sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
       setSocketOption sock ReuseAddr 1
+      setSocketOption sock NoDelay 1
       bind sock (addrAddress addr)
       listen sock 10
       return sock
 
--- | Handle a connection using a dynamic list of routes from an MVar.
-handleConnHotReload :: Handler -> MVar [Route] -> Socket -> IO ()
-handleConnHotReload noMatch routesMVar sock = do
-  req <- NBS.recv sock 1024
-  let trimmedReq = BS8.strip req
-  -- Read the most current routes from the MVar for every request.
-  currentRoutes <- readMVar routesMVar
-  response <- dispatch noMatch currentRoutes (TE.decodeUtf8 trimmedReq)
-  case response of
-    FileResponse fp -> streamFile fp sock
-    _               ->
-      NBS.sendAll sock (responseToByteString response)
-  close sock
+-- | Log a synchronous handler exception to stderr and swallow it. Async
+-- exceptions ('SomeAsyncException', i.e. 'killThread' / 'throwTo' from the
+-- supervisor) are re-thrown so cooperative shutdown still works.
+logHandlerException :: SomeException -> IO ()
+logHandlerException e = case fromException e :: Maybe SomeAsyncException of
+  Just _  -> throwIO e
+  Nothing -> hPutStrLn stderr $
+    "venusia: connection handler error: " ++ displayException e
 
--- | Stream a file over the socket in chunks. This helps the heap not balloon in size.
-streamFile :: FilePath -> Socket -> IO ()
-streamFile fp sock =
-    withFile fp ReadMode $ \h -> let
-        loop = do
-            chunk <- BS.hGetSome h chunkSize
-            unless (BS.null chunk) $ do
-                NBS.sendAll sock chunk
-                loop
-        in loop
+-- | Handle a connection using a dynamic list of routes from an MVar.
+--
+-- The socket is always closed via 'finally' so a thrown handler (or a
+-- streaming producer that hits a broken pipe) cannot leak the file
+-- descriptor. The initial @recv@ is bounded by 'readTimeoutMicros'; if the
+-- client never sends a request we drop the connection rather than holding a
+-- thread. Synchronous exceptions thrown by the handler or producer are
+-- caught and logged via 'logHandlerException' so they don't tear down the
+-- forked thread with an uncaught error dump.
+handleConnHotReload :: Handler -> MVar [Route] -> Socket -> IO ()
+handleConnHotReload noMatch routesMVar sock =
+  (body `catch` logHandlerException) `finally` close sock
+  where
+    body = do
+      mreq <- timeout readTimeoutMicros (NBS.recv sock 1024)
+      case mreq of
+        Nothing  -> return ()  -- slowloris / silent client
+        Just raw -> do
+          let trimmedReq = sanitizeSelector raw
+          currentRoutes <- readMVar routesMVar
+          response <- dispatch noMatch currentRoutes (TE.decodeUtf8 trimmedReq)
+          sendResponse sock response
