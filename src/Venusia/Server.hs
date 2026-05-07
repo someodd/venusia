@@ -180,28 +180,46 @@ on path handler = Route matcher handler
          then Just $ Request sel Nothing q
          else Nothing
 
--- | Create a route with wildcard path matching
+-- | Create a route with wildcard path matching.
+--
+-- Trailing-slash equivalence: when the pattern is a "directory" selector
+-- (ends with @\'/\'@ and contains no @\'*\'@), the version without the
+-- trailing slash matches too. Common-sense usability — clients vary on
+-- whether they normalise trailing slashes, and a request for
+-- @/applets@ should reach the same handler as @/applets/@.
+-- 'reqSelector' is preserved as the request actually arrived (so the
+-- handler can render its own canonical link if it wants).
 onWildcard :: T.Text -> Handler -> Route
 onWildcard pattern handler = Route matcher handler
   where
+    (prefix, rest) = T.breakOn "*" pattern
+    suffix         = T.drop 1 rest  -- skip the '*' character if present
+    isDirSelector  = T.null rest && "/" `T.isSuffixOf` pattern
+
+    -- Try to match @sel@ against the pattern. Returns the part that the
+    -- wildcard captured.
+    tryMatch sel = case T.stripPrefix prefix sel of
+      Just afterPrefix
+        | T.isSuffixOf suffix afterPrefix ->
+            let wildcardLen  = T.length afterPrefix - T.length suffix
+                wildcardPart = T.take wildcardLen afterPrefix
+            in Just wildcardPart
+        | otherwise -> Nothing
+      Nothing -> Nothing
+
     matcher raw =
       let (sel, q) = parseRequest raw
-          (prefix, rest) = T.breakOn "*" pattern
-          suffix = T.drop 1 rest  -- Skip the "*" character
-      in case T.stripPrefix prefix sel of
-           Just afterPrefix ->
-             -- Now check if the remaining part ends with suffix
-             if T.isSuffixOf suffix afterPrefix
-               then
-                 -- Calculate the part that matched the wildcard
-                 let wildcardLen = T.length afterPrefix - T.length suffix
-                     wildcardPart = T.take wildcardLen afterPrefix
-                 in Just $ Request
-                      { reqSelector = sel
-                      , reqWildcard = Just wildcardPart
-                      , reqQuery = q
-                      }
-               else Nothing
+          -- For dir-style patterns ("/applets/"), accept "/applets" too
+          -- by mapping it to "/applets/" before matching.
+          adjusted
+            | isDirSelector && sel == T.dropEnd 1 pattern = pattern
+            | otherwise                                   = sel
+      in case tryMatch adjusted of
+           Just wildcardPart -> Just $ Request
+             { reqSelector = sel             -- as-received
+             , reqWildcard = Just wildcardPart
+             , reqQuery    = q
+             }
            Nothing -> Nothing
 
 -- | Dispatch a request to the first matching route

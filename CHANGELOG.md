@@ -8,6 +8,12 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.7.1.0 - 2026-05-07
+
+### Fixed
+
+* **Trailing-slash equivalence in `onWildcard`.** A `[[files]]` block with `selector = "/applets/"` now matches both `/applets/` and `/applets`. Previously the version without the trailing slash 404'd, which surprised clients that don't normalise trailing slashes consistently. Bare-prefix patterns (e.g. `/foo` without trailing slash) and wildcard patterns (e.g. `/files/*`) are unaffected. The `Request.reqSelector` passed to the handler is preserved as the request actually arrived; only matching is relaxed.
+
 ## 0.7.0.0 - 2026-05-07
 
 This release rebases `[[script_extension]]` onto `[[files]]` blocks: the rule for *what to do with an extension* now lives next to the directory that owns it, not in a global pool. Same for `[[file_type]]` (additive — top-level still works for genuinely global rules).

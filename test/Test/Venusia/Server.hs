@@ -181,4 +181,36 @@ onWildcardTests = testGroup "onWildcard"
                req.reqWildcard === Just mid
                .&&. req.reqSelector === sel
              Nothing -> counterexample "expected match" False
+
+  -- Trailing-slash equivalence (added 0.7.1.0). For a directory-style
+  -- pattern ("/applets/"), a request without the trailing slash matches
+  -- the same handler.
+  , testCase "trailing-slash dir pattern matches sel without slash" $ do
+      let r = onWildcard "/applets/" stubHandler
+      case r.matchRoute "/applets" of
+        Just req -> do
+          req.reqWildcard @?= Just ""
+          req.reqSelector @?= "/applets"   -- preserved as-received
+        Nothing -> assertFailure "expected /applets to match /applets/"
+
+  , testCase "trailing-slash dir pattern still matches sel with slash" $ do
+      let r = onWildcard "/applets/" stubHandler
+      case r.matchRoute "/applets/" of
+        Just req -> req.reqWildcard @?= Just ""
+        Nothing  -> assertFailure "expected /applets/ to match /applets/"
+
+  , testCase "trailing-slash dir pattern matches sel under it" $ do
+      let r = onWildcard "/applets/" stubHandler
+      case r.matchRoute "/applets/figlet.lhs" of
+        Just req -> req.reqWildcard @?= Just "figlet.lhs"
+        Nothing  -> assertFailure "expected /applets/figlet.lhs to match"
+
+  , testCase "trailing-slash dir pattern does not match unrelated prefix" $ do
+      let r = onWildcard "/applets/" stubHandler
+      r.matchRoute "/appletsfoo" @?= Nothing
+
+  , testCase "wildcard pattern is unaffected by trailing-slash logic" $ do
+      let r = onWildcard "/files/*" stubHandler
+      -- "/files" (no slash, no wildcard match) still doesn't match a wildcard pattern
+      r.matchRoute "/files" @?= Nothing
   ]
