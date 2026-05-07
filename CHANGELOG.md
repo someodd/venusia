@@ -8,6 +8,55 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.7.0.0 - 2026-05-07
+
+This release rebases `[[script_extension]]` onto `[[files]]` blocks: the rule for *what to do with an extension* now lives next to the directory that owns it, not in a global pool. Same for `[[file_type]]` (additive — top-level still works for genuinely global rules).
+
+### Breaking
+
+* **`[[script_extension]]` is no longer a top-level table**. Move each rule inside the `[[files]]` block it should apply to, as `[[files.script_extension]]`. There is no global script-extension pool any more — a `[[files]]` block executes scripts iff it has a matching `[[files.script_extension]]` entry. Default-deny by construction.
+* **`run_scripts` field on `[[files]]` is removed**. Activation is now implicit via the presence of `[[files.script_extension]]`.
+
+  Migration:
+  ```toml
+  # Before (0.6.0.0)
+  [[script_extension]]
+  extension = "lhs"
+  command = "stack"
+  arguments = ["script", "$file", "--", "$search"]
+
+  [[files]]
+  selector = "/cgi/"
+  path = "/var/gopher/output/cgi/"
+  run_scripts = true
+
+  # After (0.7.0.0)
+  [[files]]
+  selector = "/cgi/"
+  path = "/var/gopher/output/cgi/"
+
+    [[files.script_extension]]
+    extension = "lhs"
+    command = "stack"
+    arguments = ["script", "$file", "--", "$search"]
+  ```
+
+### Added
+
+* **Nested `[[files.file_type]]`** — per-block item-type overrides. Wins over top-level `[[file_type]]` rules within that `[[files]]` block's directory listings. Top-level `[[file_type]]` still works for genuinely global rules (e.g. `.md = "0"` everywhere).
+* **`$selector` substitution** in `[[files.script_extension]]` arguments. Resolved to the gopher selector that matched the request (e.g. `/cgi/figlet.lhs`). Lets a script generate menu items pointing back at itself without hardcoding its own path — useful when a script's selector can change (different `[[files]]` mount, dir rename).
+* `FilesConfig`, `RoutesConfig`, and `routesConfigCodec` are now exported from `Venusia.Routes` so library users (and the test suite) can construct or decode configs directly.
+
+### Why the asymmetry between file_type and script_extension
+
+`file_type` is cosmetic — a wrong rule shows the wrong icon in a directory listing. `script_extension` is executive — a wrong rule executes code. Globals are fine for cosmetic rules; they're a footgun for executive ones (a global `[[script_extension]]` plus an unrelated `[[files]]` block opting in via the old `run_scripts` flag was an at-distance way to enable execution somewhere you didn't intend). Forcing executive rules to live inside the block they apply to closes that.
+
+### Tests
+
+* New: tomland decodes `[[files.script_extension]]` and `[[files.file_type]]` nested arrays correctly (`test_tomlandNestedArrayDecode`).
+* New: `$selector` substitutes with the request's selector (`test_scriptExtensionSelectorSubstitution`).
+* Repurposed: `test_scriptExtensionTokenPassthrough` now uses `$wildcard` (still unsubstituted) instead of `$selector` (now recognised).
+
 ## 0.6.0.0 - 2026-05-07
 
 ### Added

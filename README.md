@@ -87,10 +87,14 @@ Four top-level sections, each one a list of tables.
 
 ```toml
 [[files]]
-selector    = "/files/"     # gopher path prefix; "" is the root selector
-path        = "/var/gopher/source"
-run_scripts = false         # opt-in: see [[script_extension]] below
+selector = "/files/"        # gopher path prefix; "" is the root selector
+path     = "/var/gopher/source"
+
+  # Optional, nested: see [[files.script_extension]] below.
+  # If present, files of that extension are executed instead of served as source.
 ```
+
+A `[[files]]` block can carry any number of nested `[[files.script_extension]]` and `[[files.file_type]]` rules; both are described below.
 
 ### `[[gateway]]` — bind a selector to a process
 
@@ -117,42 +121,66 @@ postamble     = []             # optional: literal gophermap lines after the out
 
 A search query is implied whenever `$search` appears in `arguments`; no separate `search` flag is needed.
 
-### `[[script_extension]]` — run files of a given extension
+### `[[files.script_extension]]` — run files of a given extension
 
-Files under a `[[files]]` root with `run_scripts = true` whose extension matches an entry in this table are executed by the configured runner; their stdout becomes the response.
+**Nested under a `[[files]]` block.** Files inside that block's `path` whose extension matches one of these entries are executed by the configured runner; their stdout becomes the response. A `[[files]]` block with no nested `script_extension` rules never executes anything — the file is served as static content.
 
 ```toml
-[[script_extension]]
-extension     = "hs"           # without leading dot; case-insensitive
-command       = "runghc"
-arguments     = ["$file"]      # $file → canonical absolute path; $search → request query
-stream        = true
-as_info_lines = false
+[[files]]
+selector = "/cgi/"
+path     = "/var/gopher/output/cgi/"
+
+  [[files.script_extension]]
+  extension     = "hs"           # without leading dot; case-insensitive
+  command       = "runghc"
+  arguments     = ["$file", "$selector", "$search"]
+  stream        = true
+  as_info_lines = false
 ```
+
+| Placeholder | Resolved to |
+|---|---|
+| `$file` | Canonical absolute path to the script on disk. |
+| `$selector` | Gopher selector that resolved to this script (e.g. `/cgi/figlet.hs`). Use it to emit menu items pointing back at the script without hardcoding its path. |
+| `$search` | The request's query string (after the tab), or empty. |
 
 The process's working directory is the file's parent directory, so `readFile "data.txt"` finds a sibling.
 
+There is **no top-level `[[script_extension]]` table** — the rule lives where the executable does. This is deliberate (default-deny: a `[[files]]` block can't accidentally inherit script execution from a global pool).
+
 ### `[[file_type]]` — override directory-listing item types
 
-Auto-generated directory listings emit a gopher item-type character per file (`0` text, `1` menu, `9` binary, `I` image, …). This table overrides that mapping per extension.
+Auto-generated directory listings emit a gopher item-type character per file (`0` text, `1` menu, `9` binary, `I` image, …). Both top-level and nested forms exist:
 
 ```toml
+# Top-level: applies in every directory listing the daemon generates
 [[file_type]]
-extension = "hs"
-item_type = "1"   # show .hs files as menu links in directory listings
+extension = "md"
+item_type = "0"
+
+# Nested: scoped to one [[files]] block; wins over the top-level rule
+# inside that block's listings only.
+[[files]]
+selector = "/cgi/"
+path     = "/var/gopher/output/cgi/"
+
+  [[files.file_type]]
+  extension = "hs"
+  item_type = "1"
 ```
 
 Resolution order for the auto-generated listing:
 
-1. `[[file_type]]` for the extension, if defined.
-2. Otherwise, if `[[script_extension]]` is defined: `'1'` when `as_info_lines = true`, else `'0'`.
-3. Otherwise, the hardcoded fallback (`.txt → 0`, `.png → I`, `.html → h`, …).
+1. **Nested `[[files.file_type]]`** on the serving `[[files]]` block, if defined for the extension.
+2. **Top-level `[[file_type]]`**, if defined.
+3. Otherwise, if a `[[files.script_extension]]` rule covers the extension: `'1'` when `as_info_lines = true`, else `'0'`.
+4. Otherwise, the hardcoded fallback (`.txt → 0`, `.png → I`, `.html → h`, …).
 
 User-authored `.gophermap` files always win — the gophermap author wrote the type character themselves; the server doesn't second-guess.
 
-#### Why two tables?
+#### Why allow nesting on file_type but require it on script_extension?
 
-Item types describe **how something is linked to**, not **what something is**. A `.hs` file isn't intrinsically of any gopher type; it only has a type when a directory listing or gophermap *names* it. Keeping the *how to execute* config separate from the *how to list* config is one-table-one-job, and it lets you override item types for non-script extensions too.
+`file_type` is cosmetic — a wrong rule shows the wrong icon. Globals are fine. `script_extension` is executive — a wrong rule executes code. Forcing executive rules into a `[[files]]` block makes it impossible to enable execution at-distance via an unrelated config edit.
 
 ## Recipes
 
@@ -227,20 +255,19 @@ Drop scripts in a directory; they run on request.
 
 ```toml
 [[files]]
-selector    = "/cgi/"
-path        = "/var/gopher/scripts"
-run_scripts = true
+selector = "/cgi/"
+path     = "/var/gopher/scripts"
 
-[[script_extension]]
-extension     = "hs"
-command       = "runghc"
-arguments     = ["$file"]
-stream        = true
-as_info_lines = false       # the script emits a real gophermap; don't 'i'-wrap
+  [[files.script_extension]]
+  extension     = "hs"
+  command       = "runghc"
+  arguments     = ["$file", "$selector", "$search"]
+  stream        = true
+  as_info_lines = false     # the script emits a real gophermap; don't 'i'-wrap
 
-[[file_type]]
-extension = "hs"
-item_type = "1"             # in directory listings, show .hs files as menu links
+  [[files.file_type]]
+  extension = "hs"
+  item_type = "1"           # in directory listings, show .hs files as menu links
 ```
 
 Now `/cgi/digest.hs` runs `runghc /var/gopher/scripts/digest.hs` and streams stdout. Sibling files (`runghc digest.hs` reading `data.txt` next to it) work because the working directory is the file's parent.

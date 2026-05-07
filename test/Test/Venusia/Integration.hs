@@ -33,10 +33,14 @@ import Venusia.Server
 import Venusia.Routes
   ( ScriptExtensionConfig(..)
   , FileTypeConfig(..)
+  , FilesConfig(..)
+  , RoutesConfig(..)
   , mkScriptHook
   , resolveItemType
+  , routesConfigCodec
   , runProcess
   )
+import qualified Toml
 
 tests :: TestTree
 tests = testGroup "integration"
@@ -83,8 +87,12 @@ tests = testGroup "integration"
                                                              test_streamingDisconnectKillsChild
   , testCase "script_extension $search is substituted from the request query"
                                                              test_scriptExtensionSearchSubstitution
+  , testCase "script_extension $selector is substituted from the request selector"
+                                                             test_scriptExtensionSelectorSubstitution
   , testCase "script_extension unrecognized tokens pass through verbatim"
                                                              test_scriptExtensionTokenPassthrough
+  , testCase "tomland decodes [[files.script_extension]] + [[files.file_type]] nested arrays"
+                                                             test_tomlandNestedArrayDecode
   ]
 
 ------------------------------------------------------------------------
@@ -334,7 +342,7 @@ test_scriptHookExecutesFile =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts Nothing
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -365,7 +373,7 @@ test_scriptHookFallsThrough =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts Nothing
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -396,7 +404,7 @@ test_scriptStreamingExecution =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts Nothing
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -638,7 +646,7 @@ test_scriptExtensionSearchSubstitution =
           [ onWildcard "/files/*" $ \req ->
               -- Mirror the per-request hook construction that
               -- 'createFileHandler' performs in production.
-              let hook = mkScriptHook scriptExts req.reqQuery
+              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
@@ -650,9 +658,44 @@ test_scriptExtensionSearchSubstitution =
       assertBool "$search substituted to the request query"
                  (BS.isInfixOf "search-was: hello-world" resp)
 
--- | Negative: a token that is /not/ part of the documented substitution
--- surface (e.g. '$selector') is passed through verbatim. This guards
--- against a later "harmless" addition silently consuming a literal
+-- | $selector substitutes with the gopher selector that resolved to the
+-- script. Lets a script generate menu items pointing back at itself
+-- without hardcoding its own path — which matters when a script's
+-- selector can change ([[files]] mount renames, dir reorganisation).
+test_scriptExtensionSelectorSubstitution :: Assertion
+test_scriptExtensionSelectorSubstitution =
+  withSystemTempDirectory "venusia-subst-selector" $ \dir -> do
+    let filePath = dir </> "marker.sh"
+    writeFile filePath ""
+    let scriptExts =
+          [ ScriptExtensionConfig
+              { extension   = "sh"
+              , command     = "/bin/echo"
+              , arguments   = ["selector-was:", "$selector"]
+              , stream      = Nothing
+              , asInfoLines = Nothing
+              }
+          ]
+        itemTypeFn = resolveItemType [] scriptExts
+        routes =
+          [ onWildcard "/files/*" $ \req ->
+              -- Mirror createFileHandler: build the hook per-request so
+              -- it captures req.reqSelector.
+              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery
+              in case req.reqWildcard of
+                   Just wp ->
+                     serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
+                       Nothing hook itemTypeFn
+                   Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/files/marker.sh\r\n"
+      assertBool "$selector substituted with the request's selector"
+                 (BS.isInfixOf "selector-was: /files/marker.sh" resp)
+
+-- | Negative: a token /not/ part of the documented substitution surface
+-- (currently $file, $selector, $search) is passed through verbatim.
+-- Guards against later "harmless" additions silently consuming a literal
 -- string a script-author intended to receive as-is.
 test_scriptExtensionTokenPassthrough :: Assertion
 test_scriptExtensionTokenPassthrough =
@@ -663,12 +706,12 @@ test_scriptExtensionTokenPassthrough =
           [ ScriptExtensionConfig
               { extension   = "sh"
               , command     = "/bin/echo"
-              , arguments   = ["got:", "$selector"]
+              , arguments   = ["got:", "$wildcard"]
               , stream      = Nothing
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts Nothing
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -680,8 +723,55 @@ test_scriptExtensionTokenPassthrough =
           ]
     withServer routes $ \port -> do
       resp <- gopherRoundtrip port "/files/marker.sh\r\n"
-      -- The literal '$selector' must reach the script's stdout. If it
-      -- doesn't, someone has expanded the substitution surface without
-      -- updating the docs and tests.
+      -- $wildcard is not in script_extension's substitution surface
+      -- (per substituteScriptArg's documented list) — only $file,
+      -- $selector, $search are.
       assertBool "unrecognized $-token reaches the script verbatim"
-                 (BS.isInfixOf "$selector" resp)
+                 (BS.isInfixOf "$wildcard" resp)
+
+-- | Verifies tomland actually parses nested array-of-tables for
+-- [[files.script_extension]] and [[files.file_type]]. This is the
+-- foundational claim behind the 0.7.0.0 schema redesign; if it doesn't
+-- decode, the whole thing fails.
+test_tomlandNestedArrayDecode :: Assertion
+test_tomlandNestedArrayDecode = do
+  let src =
+        "[[files]]\n\
+        \selector = \"/cgi/\"\n\
+        \path = \"/var/gopher/output/cgi/\"\n\
+        \\n\
+        \  [[files.script_extension]]\n\
+        \  extension = \"lhs\"\n\
+        \  command = \"runghc\"\n\
+        \  arguments = [\"$file\", \"$selector\", \"$search\"]\n\
+        \\n\
+        \  [[files.file_type]]\n\
+        \  extension = \"lhs\"\n\
+        \  item_type = \"1\"\n\
+        \\n\
+        \[[files]]\n\
+        \selector = \"\"\n\
+        \path = \"/var/gopher/output\"\n\
+        \\n\
+        \[[file_type]]\n\
+        \extension = \"md\"\n\
+        \item_type = \"0\"\n"
+  case Toml.decode routesConfigCodec src of
+    Left err -> assertFailure ("tomland failed to decode nested config: " ++ show err)
+    Right cfg -> do
+      length cfg.files                                                @?= 2
+      let cgiFiles = head cfg.files
+      cgiFiles.selector                                               @?= "/cgi/"
+      length cgiFiles.scriptExtensions                                @?= 1
+      (head cgiFiles.scriptExtensions).extension                      @?= "lhs"
+      (head cgiFiles.scriptExtensions).command                        @?= "runghc"
+      (head cgiFiles.scriptExtensions).arguments                      @?= ["$file", "$selector", "$search"]
+      length cgiFiles.fileTypes                                       @?= 1
+      (head cgiFiles.fileTypes).extension                             @?= "lhs"
+      (head cgiFiles.fileTypes).itemType                              @?= "1"
+      let rootFiles = cfg.files !! 1
+      rootFiles.selector                                              @?= ""
+      length rootFiles.scriptExtensions                               @?= 0
+      length rootFiles.fileTypes                                      @?= 0
+      length cfg.fileTypes                                            @?= 1
+      (head cfg.fileTypes).extension                                  @?= "md"

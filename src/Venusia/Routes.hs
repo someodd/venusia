@@ -17,6 +17,9 @@ module Venusia.Routes
   , mkScriptHook
   , ScriptExtensionConfig (..)
   , FileTypeConfig (..)
+  , FilesConfig (..)
+  , RoutesConfig (..)
+  , routesConfigCodec
   ) where
 
 import           Control.Exception          (SomeException, bracket, catch, try)
@@ -49,18 +52,22 @@ import           Venusia.FileHandler        (fileExtensionToItemType, serveDirec
 
 -- Configuration Data Types ---
 
--- | Top-level configuration holding lists for each route type.
+-- | Top-level configuration. Note: as of 0.7.0.0 there is no top-level
+-- @[[script_extension]]@ — script-runner specs live inside their owning
+-- @[[files]]@ block (see 'FilesConfig'). @[[file_type]]@ stays at the top
+-- level for genuinely global rules; @[[files]]@ blocks may *also* declare
+-- nested @[[files.file_type]]@ entries that shadow globals within that
+-- block's directory listings.
 data RoutesConfig = RoutesConfig
-  { gateways         :: [GatewayConfig]
+  { gateways  :: [GatewayConfig]
   -- ^ Command gateway configurations.
-  , files            :: [FilesConfig]
-  -- ^ File server configurations.
-  , scriptExtensions :: [ScriptExtensionConfig]
-  -- ^ Per-extension script-runner specifications. Active under any
-  -- @[[files]]@ root that opts in via @run_scripts = true@.
-  , fileTypes        :: [FileTypeConfig]
-  -- ^ Per-extension overrides for the gopher item-type character used in
-  -- auto-generated directory listings. Highest priority in the resolver.
+  , files     :: [FilesConfig]
+  -- ^ File server configurations. Each may carry its own per-block
+  -- @[[files.script_extension]]@ and @[[files.file_type]]@ rules.
+  , fileTypes :: [FileTypeConfig]
+  -- ^ Global per-extension overrides for the gopher item-type character used
+  -- in auto-generated directory listings. Any @[[files.file_type]]@ on the
+  -- serving @[[files]]@ block wins over these.
   } deriving (Show, Eq, Generic)
 
 -- | Configuration for a command-based gateway process.
@@ -82,20 +89,29 @@ data GatewayConfig = GatewayConfig
   } deriving (Show, Eq, Generic)
 
 -- | Configuration for a built-in file server.
+--
+-- The two nested-rules fields ('scriptExtensions' and 'fileTypes') were added
+-- in 0.7.0.0. They replace the old top-level @[[script_extension]]@ pool plus
+-- the @run_scripts@ flag: a @[[files]]@ block executes scripts iff it has a
+-- matching @[[files.script_extension]]@ entry. Default-deny by construction.
 data FilesConfig = FilesConfig
-  { selector   :: T.Text
-  , path       :: FilePath
-  , runScripts :: Maybe Bool
-  -- ^ When 'Just' 'True', files matching a registered @[[script_extension]]@
-  -- under this root are executed instead of served as source. Defaults to
-  -- 'False'; opt-in is per-files-root for safety.
+  { selector         :: T.Text
+  , path             :: FilePath
+  , scriptExtensions :: [ScriptExtensionConfig]
+  -- ^ Per-block script-runner specs (TOML: @[[files.script_extension]]@).
+  -- A file under this @[[files]]@'s @path@ whose extension matches one of
+  -- these is executed by the configured runner instead of being served as
+  -- source. Empty list = no execution. There is no top-level fallback.
+  , fileTypes        :: [FileTypeConfig]
+  -- ^ Per-block item-type overrides (TOML: @[[files.file_type]]@). Win over
+  -- top-level @[[file_type]]@ when this block is generating the listing.
   } deriving (Show, Eq, Generic)
 
--- | A file-extension-driven script runner. When 'runScripts' is enabled on
--- a 'FilesConfig' and a request resolves to a file whose extension matches,
--- the configured command is invoked with the file path substituted into
--- @$file@ (and the request query into @$search@); the process output
--- becomes the response.
+-- | A file-extension-driven script runner. When a request resolves to a file
+-- whose extension matches a 'ScriptExtensionConfig' in the serving
+-- 'FilesConfig'.scriptExtensions list, the configured command is invoked
+-- with the file path substituted into @$file@ (and the request query into
+-- @$search@); the process output becomes the response.
 data ScriptExtensionConfig = ScriptExtensionConfig
   { extension   :: T.Text
   -- ^ Extension to match, without the leading dot (e.g. @"lhs"@).
@@ -109,8 +125,8 @@ data ScriptExtensionConfig = ScriptExtensionConfig
 
 -- | Override for the gopher item-type character used when an
 -- auto-generated directory listing emits a link to a file with the matching
--- extension. Wins over both the @[[script_extension]]@ default and the
--- hardcoded fallback in 'Venusia.FileHandler.fileExtensionToItemType'.
+-- extension. Wins over the @[[script_extension]]@-derived default and over
+-- the hardcoded fallback in 'Venusia.FileHandler.fileExtensionToItemType'.
 data FileTypeConfig = FileTypeConfig
   { extension :: T.Text
   , itemType  :: T.Text
@@ -122,14 +138,11 @@ data FileTypeConfig = FileTypeConfig
 -- TOML Parsing Codecs ---
 
 -- | Codec for the top-level RoutesConfig.
--- This was the main source of the first error. Toml.genericCodec can't be used
--- on the top-level type, so we build it from the individual list codecs.
 routesConfigCodec :: TomlCodec RoutesConfig
 routesConfigCodec = RoutesConfig
-    <$> Toml.list gatewayConfigCodec         "gateway"          .= (.gateways)
-    <*> Toml.list filesConfigCodec           "files"            .= (.files)
-    <*> Toml.list scriptExtensionConfigCodec "script_extension" .= (.scriptExtensions)
-    <*> Toml.list fileTypeConfigCodec        "file_type"        .= (.fileTypes)
+    <$> Toml.list gatewayConfigCodec  "gateway"   .= (.gateways)
+    <*> Toml.list filesConfigCodec    "files"     .= (.files)
+    <*> Toml.list fileTypeConfigCodec "file_type" .= (.fileTypes)
 
 -- | Codec for a single command gateway configuration.
 gatewayConfigCodec :: TomlCodec GatewayConfig
@@ -144,11 +157,16 @@ gatewayConfigCodec = GatewayConfig
     <*> Toml.dioptional (Toml.arrayOf Toml._Text "postamble")     .= (.postamble)
 
 -- | Codec for a single file server configuration.
+--
+-- Note the nested @Toml.list@ calls — TOML arrays-of-tables nest cleanly
+-- (e.g. @[[files.script_extension]]@), and tomland's @Toml.list@ codec
+-- works at any depth.
 filesConfigCodec :: TomlCodec FilesConfig
 filesConfigCodec = FilesConfig
-    <$> Toml.text   "selector"               .= (.selector)
-    <*> Toml.string "path"                   .= (.path)
-    <*> Toml.dioptional (Toml.bool "run_scripts") .= (.runScripts)
+    <$> Toml.text   "selector"                                            .= (.selector)
+    <*> Toml.string "path"                                                .= (.path)
+    <*> Toml.list scriptExtensionConfigCodec "script_extension"           .= (.scriptExtensions)
+    <*> Toml.list fileTypeConfigCodec        "file_type"                  .= (.fileTypes)
 
 -- | Codec for a single script-extension specification.
 scriptExtensionConfigCodec :: TomlCodec ScriptExtensionConfig
@@ -190,24 +208,25 @@ readRoutesConfig path = catchIOError
     case Toml.decode routesConfigCodec contents of
       Left err      -> pure . Left $ "Failed to parse TOML: " ++ show err
       Right config -> do
-        -- Optional: Log what was loaded
         forM_ (config.gateways) $ \c ->
           putStrLn $ "Loaded gateway: " ++ T.unpack c.selector
-        forM_ (config.files)    $ \c -> putStrLn $ "Loaded files: " ++ T.unpack c.selector
-        forM_ (config.scriptExtensions) $ \c ->
-          putStrLn $ "Loaded script_extension: ." ++ T.unpack c.extension
+        forM_ (config.files)    $ \c -> do
+          putStrLn $ "Loaded files: " ++ T.unpack c.selector
+          forM_ c.scriptExtensions $ \s ->
+            putStrLn $ "  + script_extension: ." ++ T.unpack s.extension
+          forM_ c.fileTypes $ \f ->
+            putStrLn $ "  + file_type: ." ++ T.unpack f.extension ++ " -> " ++ T.unpack f.itemType
         forM_ (config.fileTypes) $ \c ->
-          putStrLn $ "Loaded file_type: ." ++ T.unpack c.extension ++ " -> " ++ T.unpack c.itemType
+          putStrLn $ "Loaded global file_type: ." ++ T.unpack c.extension ++ " -> " ++ T.unpack c.itemType
         pure $ Right config
   )
   (\e -> pure . Left $ "Error reading file: " ++ show e)
 
 -- | Builds a list of routes from the parsed RoutesConfig.
--- This function was fixed to handle all three route types and pass parameters correctly.
 buildRoutes :: RoutesConfig -> T.Text -> Int -> [Route]
 buildRoutes config host port =
     (buildGatewayRoutes $ config.gateways) ++
-    (buildFileRoutes    (config.files)    config.scriptExtensions config.fileTypes host port)
+    (buildFileRoutes    (config.files)    config.fileTypes host port)
 
 -- | Builds routes for command gateways.
 buildGatewayRoutes :: [GatewayConfig] -> [Route]
@@ -219,31 +238,44 @@ buildGatewayRoutes = concatMap createGatewayRoute
           then [onWildcard config.selector handler]
           else [on config.selector handler]
 
--- | Builds routes for file servers.
+-- | Builds routes for file servers. Global @[[file_type]]@ rules are passed
+-- in for use as a fallback when a 'FilesConfig' has no nested override for
+-- the requested extension.
 buildFileRoutes
-  :: [FilesConfig] -> [ScriptExtensionConfig] -> [FileTypeConfig]
+  :: [FilesConfig] -> [FileTypeConfig]
   -> T.Text -> Int -> [Route]
-buildFileRoutes configs scriptExts fileTypes host port =
+buildFileRoutes configs globalFileTypes host port =
     concatMap mkRoute configs
   where
     mkRoute config =
-      [onWildcard config.selector (createFileHandler config scriptExts fileTypes host port)]
+      [onWildcard config.selector (createFileHandler config globalFileTypes host port)]
 
 
 -- Handler Creation ---
 
 -- | Creates a handler for a file server configuration.
+--
+-- Resolution at request time:
+--
+-- * Script execution is gated entirely by @config.scriptExtensions@. Empty
+--   list = the file is served as static content. There is no fallback to a
+--   global pool (intentional default-deny — a misconfigured @[[files]]@
+--   block can never accidentally execute scripts).
+-- * Item-type resolution merges the block's nested file_type rules with the
+--   provided global rules; nested wins via list ordering ('lookupExt' takes
+--   the first match).
 createFileHandler
-  :: FilesConfig -> [ScriptExtensionConfig] -> [FileTypeConfig]
+  :: FilesConfig -> [FileTypeConfig]
   -> T.Text -> Int -> Handler
-createFileHandler config scriptExts fileTypes host port request =
+createFileHandler config globalFileTypes host port request =
   case request.reqWildcard of
     Just wildcard -> do
-      let scriptsEnabled = fromMaybe False config.runScripts
-          fileHook = if scriptsEnabled
-                       then mkScriptHook scriptExts request.reqQuery
-                       else \_ -> pure Nothing
-          itemTypeFn = resolveItemType fileTypes scriptExts
+      let scriptExts     = config.scriptExtensions
+          mergedFileTypes = config.fileTypes ++ globalFileTypes
+          fileHook       = if null scriptExts
+                             then \_ -> pure Nothing
+                             else mkScriptHook scriptExts request.reqSelector request.reqQuery
+          itemTypeFn     = resolveItemType mergedFileTypes scriptExts
       serveDirectoryWith host port config.path config.selector wildcard Nothing
         fileHook itemTypeFn
     Nothing       -> pure $ TextResponse "Error: No path provided for file handler."
@@ -253,16 +285,24 @@ createFileHandler config scriptExts fileTypes host port request =
 -- file's extension is registered for execution; otherwise it returns
 -- 'Nothing' and the file is served verbatim.
 --
--- The hook captures the request's @$search@ query so scripts invoked
--- type-7-style see the user's input.
+-- The hook captures both the gopher selector that resolved to this script
+-- (used for @$selector@ substitution so the script can generate menu items
+-- that link back to itself without hardcoding its own path) and the
+-- request's @$search@ query (so type-7-style invocations see the user's
+-- input).
 mkScriptHook
-  :: [ScriptExtensionConfig] -> Maybe T.Text -> FilePath -> IO (Maybe Response)
-mkScriptHook specs mQuery filePath =
+  :: [ScriptExtensionConfig]
+  -> T.Text                   -- ^ request selector (for @$selector@ substitution)
+  -> Maybe T.Text             -- ^ optional search query (for @$search@)
+  -> FilePath
+  -> IO (Maybe Response)
+mkScriptHook specs reqSelector mQuery filePath =
   case lookupExt (extKey filePath) specs of
     Nothing   -> pure Nothing
     Just spec -> do
       let processedArgs =
-            map (T.unpack . substituteScriptArg (T.pack filePath) mQuery) spec.arguments
+            map (T.unpack . substituteScriptArg (T.pack filePath) reqSelector mQuery)
+                spec.arguments
       Just <$> runProcess
                  (fromMaybe False spec.stream)
                  (fromMaybe False spec.asInfoLines)
@@ -275,7 +315,9 @@ mkScriptHook specs mQuery filePath =
 --
 -- Resolution order:
 --
--- 1. @[[file_type]]@ override for that extension, if defined.
+-- 1. @[[file_type]]@ override for that extension, if defined. Caller is
+--    expected to have already merged nested-then-global rules so the first
+--    match wins correctly.
 -- 2. Otherwise: if @[[script_extension]]@ is defined, @\'1\'@ when
 --    @as_info_lines = true@, else @\'0\'@.
 -- 3. Otherwise: 'Venusia.FileHandler.fileExtensionToItemType' (the
@@ -319,12 +361,22 @@ singleChar t = case T.uncons t of
   Just (c, rest) | T.null rest -> Just c
   _                            -> Nothing
 
--- | Replace @$file@ and @$search@ in a script-extension argument template.
+-- | Replace @$file@, @$selector@, and @$search@ in a script-extension
+-- argument template.
+--
+-- * @$file@ — canonical absolute path to the script on disk.
+-- * @$selector@ — gopher selector that resolved to this script, e.g.
+--   @/cgi/figlet.lhs@. Useful for emitting menu items that link back to
+--   the script itself (search prompts, refresh links) without hardcoding
+--   the path.
+-- * @$search@ — the request's query string after the tab, or empty.
+--
 -- (No @$wildcard@: the file path itself is what the wildcard matched.)
-substituteScriptArg :: T.Text -> Maybe T.Text -> T.Text -> T.Text
-substituteScriptArg filePath mQuery =
-    T.replace "$file" filePath
-      . T.replace "$search" (fromMaybe "" mQuery)
+substituteScriptArg :: T.Text -> T.Text -> Maybe T.Text -> T.Text -> T.Text
+substituteScriptArg filePath reqSelector mQuery =
+    T.replace "$file"     filePath
+      . T.replace "$selector" reqSelector
+      . T.replace "$search"   (fromMaybe "" mQuery)
 
 -- | Creates a handler for a command gateway configuration.
 createCommandHandler :: GatewayConfig -> Handler
