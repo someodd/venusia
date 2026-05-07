@@ -35,7 +35,7 @@ data HookInfo = HookInfo
 hookInfoParser :: Parser HookInfo
 hookInfoParser = HookInfo
     <$> strArgument (metavar "CHANGE_HOOK" <> help "Shell command to run on change.")
-    <*> argument auto (metavar "CHANGE_HOOK_DELAY" <> value 0 <> help "Optional delay in ms before running hook (ms).")
+    <*> argument auto (metavar "CHANGE_HOOK_DELAY" <> value 0 <> help "Optional delay in microseconds before running hook (e.g. 10000000 = 10 s).")
 
 -- | Parser for the 'watch' command's arguments.
 serveWatchCommand :: Parser Command
