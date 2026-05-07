@@ -8,6 +8,8 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.6.0.0 - 2026-05-07
+
 ### Added
 
 * `StreamingResponse` constructor for constant-memory responses driven by a producer callback. Suitable for generated content, process pipes, TCP relays (e.g. proxying an internet-radio stream over Gopher), and anything else where the payload isn't a file on disk.
