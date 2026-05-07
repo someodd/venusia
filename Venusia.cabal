@@ -107,12 +107,15 @@ test-suite Venusia-test
   default-extensions:
       OverloadedStrings
       OverloadedRecordDot
+      DuplicateRecordFields
   ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       QuickCheck
     , Venusia
     , base
     , bytestring
+    , directory
+    , filepath
     , network
     , quickcheck-instances
     , tasty

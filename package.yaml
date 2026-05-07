@@ -96,11 +96,14 @@ tests:
     default-extensions:
     - OverloadedStrings
     - OverloadedRecordDot
+    - DuplicateRecordFields
     default-language: GHC2021
     dependencies:
     - Venusia
     - base
     - bytestring
+    - directory
+    - filepath
     - text
     - network
     - tasty

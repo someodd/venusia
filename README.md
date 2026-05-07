@@ -295,14 +295,141 @@ sudo systemctl restart venusia.service
 
 ## Configuration (`routes.toml`)
 
-Configure the daemon by defining routes in `routes.toml`.
+Configure the daemon by defining routes in `routes.toml`. The four
+top-level sections are `[[files]]`, `[[gateway]]`, `[[script_extension]]`,
+and `[[file_type]]`.
 
-  * **`[[files]]`**: Serves static files.
-      * `selector`: Gopher path prefix (e.g., `/files/`).
-      * `path`: Local directory to serve.
-  * **`[[gateway]]`**: Executes a shell command.
-      * `selector`: Gopher path, can include a wildcard (`*`).
-      * `command`: The command to run.
-      * `arguments`: Command arguments. `$search` and `$wildcard` are replaced with user input.
-      * `wildcard`: Set to `true` if the selector uses a wildcard.
-      * `menu`: Set to `true` to format the command's output as a Gopher menu.
+### `[[files]]` — serve a directory
+
+  * `selector`: gopher path prefix (e.g. `/files/`). The empty string `""`
+    is the gopher root.
+  * `path`: local directory to serve.
+  * `run_scripts` *(optional, default `false`)*: when `true`, files whose
+    extension matches a registered `[[script_extension]]` are **executed**
+    instead of served as source. Opt-in per root for safety — a typo or a
+    later-added directory of source viewers can't accidentally start
+    running things.
+
+### `[[gateway]]` — bind a selector to a process
+
+  * `selector`: gopher path; may include a single wildcard (`*`).
+  * `command` / `arguments`: what to run. `$search` is replaced with the
+    request query (type-7 input); `$wildcard` is replaced with whatever
+    matched the `*` in `selector`.
+  * `wildcard`: set to `true` if `selector` contains `*`.
+  * `stream` *(optional, default `false`)*: pipe the process's stdout
+    straight to the client via `StreamingResponse` (constant memory; the
+    producer paces the response). The child is terminated if the client
+    disconnects. Use this for radio relays, large dumps, live tails.
+  * `as_info_lines` *(optional, default `false`)*: wrap each output line
+    as an info-line gophermap item (`iLINE\t\t\t\r\n`). Use when the
+    gateway is reached via a menu-typed link and the process emits plain
+    text that needs to render cleanly inside a gophermap.
+  * `preamble` / `postamble` *(optional)*: lists of literal gophermap
+    lines emitted before/after the process output.
+
+### `[[script_extension]]` — run files of an extension
+
+Active under any `[[files]]` root that has `run_scripts = true`. When a
+request resolves to a file whose extension matches, the runner executes
+the file and the stdout becomes the response.
+
+  * `extension`: the extension to match, **without the leading dot**
+    (e.g. `"lhs"`).
+  * `command` / `arguments`: what to run. `$file` is replaced with the
+    canonical absolute path of the matched file; `$search` with the
+    request query (if any). The process's working directory defaults to
+    the directory containing the file, so sibling-file reads work.
+  * `stream`, `as_info_lines`: same semantics as on `[[gateway]]`.
+
+```toml
+[[script_extension]]
+extension     = "hs"
+command       = "runghc"
+arguments     = ["$file"]
+stream        = true
+as_info_lines = false
+```
+
+### `[[file_type]]` — override the directory-listing item type
+
+Auto-generated directory listings emit a gopher item-type character for
+each file (`0` for text, `1` for menu, `9` for binary, `I` for image,
+…). This table overrides the default per extension.
+
+  * `extension`: extension without leading dot.
+  * `item_type`: one-character gopher type code as a TOML string (e.g.
+    `"0"`, `"1"`, `"9"`).
+
+```toml
+[[file_type]]
+extension = "hs"
+item_type = "0"
+
+[[file_type]]
+extension = "csv"
+item_type = "0"
+```
+
+#### Why a separate table from `[[script_extension]]`?
+
+Item types describe **how something is linked to**, not **what something
+is**. A `.lhs` file isn't intrinsically of any gopher type; it only has a
+type when a directory listing or a gophermap *names* it. Keeping the
+"how to execute" config (`[[script_extension]]`) separate from the "how
+to list" config (`[[file_type]]`) is one-table-one-job and lets you
+override item types for non-script extensions too.
+
+When both apply, `[[file_type]]` wins. Resolution order for the
+auto-generated directory listing:
+
+1. `[[file_type]]` for the extension, if defined.
+2. Otherwise, if `[[script_extension]]` is defined: `'1'` when
+   `as_info_lines = true`, else `'0'`.
+3. Otherwise, the hardcoded fallback (`.txt → 0`, `.png → I`, …).
+
+User-authored `.gophermap` files always win — the gophermap author wrote
+the type character themselves, and the server doesn't second-guess.
+
+### A worked script example
+
+Lay out a directory like this:
+
+```
+/var/gopher/scripts/
+  digest.hs        # outputs a gophermap, runs via runghc
+  status.sh        # outputs plain text, runs via /bin/sh
+  README.txt       # plain text, served verbatim (no [[script_extension]] for .txt)
+```
+
+`routes.toml`:
+
+```toml
+[[files]]
+selector    = "/cgi/"
+path        = "/var/gopher/scripts/"
+run_scripts = true
+
+[[script_extension]]
+extension     = "hs"
+command       = "runghc"
+arguments     = ["$file"]
+stream        = true
+as_info_lines = false        # script emits a real gophermap, don't 'i'-wrap
+
+[[script_extension]]
+extension     = "sh"
+command       = "/bin/sh"
+arguments     = ["$file"]
+stream        = true
+as_info_lines = true         # script emits plain text, wrap as info items
+
+[[file_type]]
+extension = "hs"
+item_type = "1"              # show as a menu link (overrides script_extension default '0')
+```
+
+A client that pulls `/cgi/digest.hs` gets the script's stdout, streamed.
+A client that pulls `/cgi/README.txt` gets the file as text. A directory
+listing of `/cgi/` shows `digest.hs` as item type `1`, `status.sh` as
+`'1'` (from `as_info_lines = true`), and `README.txt` as `'0'`.

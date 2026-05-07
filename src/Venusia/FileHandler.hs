@@ -10,6 +10,8 @@ specified (assume it from server config).
 
 module Venusia.FileHandler
   ( serveDirectory
+  , serveDirectoryWith
+  , fileExtensionToItemType
   ) where
 
 import qualified Data.Text as T
@@ -24,7 +26,7 @@ import System.Directory
   )
 import Venusia.MenuBuilder (gophermapRender, render, item, error', info, menu, directory, text)
 import Venusia.Server (Request(..), Response(..))
-import System.FilePath ((</>), takeExtension, makeRelative, takeDirectory)
+import System.FilePath ((</>), takeExtension, makeRelative, takeDirectory, splitDirectories)
 import qualified Data.ByteString as BL
 import Data.List (isPrefixOf, sortBy, partition)
 import Data.Time (UTCTime, formatTime, defaultTimeLocale)
@@ -159,9 +161,14 @@ truncateFilename name =
   else T.take (maxFilenameLength - 4) name `T.append` T.pack "... "
 
 -- FIXME: this is so messy! it's hard to tell what's going on with the file paths.
--- | List directory contents as a gophermap
-listDirectoryAsGophermap :: T.Text -> Int -> FilePath -> T.Text -> FilePath -> Maybe SortBy -> IO T.Text
-listDirectoryAsGophermap hostname port serveRoot selectorPrefix requestedPath sortBy = do
+-- | List directory contents as a gophermap. The supplied item-type function
+-- decides the type character for each non-directory file (so callers can
+-- override the hardcoded extension table for e.g. script extensions).
+listDirectoryAsGophermapWith
+  :: T.Text -> Int -> FilePath -> T.Text -> FilePath -> Maybe SortBy
+  -> (FilePath -> Char)
+  -> IO T.Text
+listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPath sortBy itemTypeFor = do
     files <- listDirectory requestedPath
     fileInfos <- mapM (getFileInfo requestedPath) files
 
@@ -172,26 +179,26 @@ listDirectoryAsGophermap hostname port serveRoot selectorPrefix requestedPath so
         readmePath = requestedPath </> "README.txt"
 
     putStrLn $ "Listing directory: " ++ T.unpack parentSelector
-    
+
     -- Check if README.txt exists and read it
     readmeExists <- doesFileExist readmePath
     readmeContents <- if readmeExists
                       then T.lines <$> T.readFile readmePath
                       else return []
-    
+
     -- Convert README contents to info items
     let readmeItems = map info readmeContents
-        
+
     gopherItems <-
         mapM (\fi -> do
             let
               filename = T.unpack fi.fiName
               selector = T.pack $ T.unpack selectorPrefix </> relativePath </> filename
-              itemType = if fi.fiIsDir then '1' else fileExtensionToItemType filename
+              itemType = if fi.fiIsDir then '1' else itemTypeFor filename
               infoText = formatFileInfoTable fi
             return $ item itemType infoText selector hostname port
             ) sortedFiles
-            
+
     -- Compile the final menu, including README.txt contents if it exists
     return . render $
       info ("Directory listing for: " <> T.pack relativePath) :
@@ -200,21 +207,54 @@ listDirectoryAsGophermap hostname port serveRoot selectorPrefix requestedPath so
       (if null readmeContents then mempty else text "README.txt:" (T.pack $ T.unpack selectorPrefix </> relativePath </> "README.txt") hostname port : readmeItems ++ [info ""]) ++
       gopherItems
 
--- | Serve a directory listing or file content
+-- | Serve a directory listing or file content. Equivalent to
+-- @'serveDirectoryWith' … (\\_ -> pure Nothing) 'fileExtensionToItemType'@.
 serveDirectory :: T.Text -> Int -> FilePath -> T.Text -> T.Text -> Maybe SortBy -> IO Response
-serveDirectory host port root selectorRoot requestedPath sortBy = do
+serveDirectory host port root selectorRoot requestedPath sortBy =
+  serveDirectoryWith host port root selectorRoot requestedPath sortBy
+    (\_ -> pure Nothing) fileExtensionToItemType
+
+-- | Serve a directory listing or file content, with two extension points:
+--
+-- * @fileHook@: called when the request resolves to a regular file. Returning
+--   'Just' a 'Response' short-circuits the default 'FileResponse'; returning
+--   'Nothing' falls through to serving the file verbatim. Use this to
+--   intercept files of certain extensions and execute them as scripts (see
+--   'Venusia.Routes' for the TOML-driven configuration).
+-- * @itemTypeFor@: decides the gopher item-type character used for each file
+--   in the auto-generated directory listing. Override the hardcoded
+--   'fileExtensionToItemType' to type script-extension files as text/menu
+--   instead of the default '9' (binary).
+--
+-- Path canonicalisation and the directory-traversal guard run before either
+-- hook is consulted, so neither callback can be invoked with a path outside
+-- the served root.
+serveDirectoryWith
+  :: T.Text                              -- ^ host
+  -> Int                                 -- ^ port
+  -> FilePath                            -- ^ served root
+  -> T.Text                              -- ^ selector prefix
+  -> T.Text                              -- ^ requested sub-path
+  -> Maybe SortBy
+  -> (FilePath -> IO (Maybe Response))   -- ^ file hook
+  -> (FilePath -> Char)                  -- ^ item-type override fn
+  -> IO Response
+serveDirectoryWith host port root selectorRoot requestedPath sortBy fileHook itemTypeFor = do
   let
     path = if T.isPrefixOf "/" requestedPath
            then root </> T.unpack (T.drop 1 requestedPath)
            else root </> T.unpack requestedPath
-  -- check if the path is a subdirectory of the root
-  -- (this is a security measure to prevent directory traversal attacks)
+  -- Security: ensure the canonicalised path is at or under the canonical
+  -- root. Compare on path components, not raw strings — '/var/gopher' is
+  -- a string-prefix of '/var/gopher2/secret' but is not a path ancestor
+  -- of it.
   rootCanonical <- canonicalizePath root
   pathCanonical <- canonicalizePath path
   let gopherMapPath = pathCanonical </> ".gophermap"
-  let isSubdirectory = rootCanonical `isPrefixOf` pathCanonical
-  putStrLn $ rootCanonical ++ " ... " ++ pathCanonical ++ show isSubdirectory
-  if not isSubdirectory
+  let isUnderRoot = splitDirectories rootCanonical
+                      `isPrefixOf` splitDirectories pathCanonical
+  putStrLn $ rootCanonical ++ " ... " ++ pathCanonical ++ show isUnderRoot
+  if not isUnderRoot
     then return $ TextResponse $ error' "Access denied: Path is outside the root directory."
     else do
       -- Check if the .gophermap file exists
@@ -227,7 +267,8 @@ serveDirectory host port root selectorRoot requestedPath sortBy = do
           return . TextResponse $ gophermapRender host port content
         else if directoryExists then
           -- Generate directory listing with file info
-          TextResponse <$> listDirectoryAsGophermap host port root selectorRoot pathCanonical sortBy
+          TextResponse <$> listDirectoryAsGophermapWith host port root selectorRoot pathCanonical sortBy itemTypeFor
         else do
-          -- just serve the file
-          pure $ FileResponse pathCanonical
+          -- File branch: consult the hook before falling back to FileResponse.
+          mResp <- fileHook pathCanonical
+          pure $ fromMaybe (FileResponse pathCanonical) mResp

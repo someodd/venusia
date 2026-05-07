@@ -12,6 +12,27 @@ and this project adheres to the
 
 * `StreamingResponse` constructor for constant-memory responses driven by a producer callback. Suitable for generated content, process pipes, TCP relays (e.g. proxying an internet-radio stream over Gopher), and anything else where the payload isn't a file on disk.
 * `streamFromHandle` helper exported from `Venusia.Server` for streaming any `Handle` in 32 KB chunks.
+* `[[script_extension]]` config table — files whose extension matches a registered spec are executed by the configured runner (e.g. `runghc $file`) instead of served as source. Active per `[[files]]` root via the new `run_scripts = true` opt-in (defaults to `false` for safety). Argument substitution: `$file` is the canonical absolute file path, `$search` the request query.
+* `[[file_type]]` config table — overrides the gopher item-type character used in auto-generated directory listings, per extension. Resolution order: `[[file_type]]` > `[[script_extension]]` default (`'1'` if `as_info_lines`, else `'0'`) > hardcoded `fileExtensionToItemType`.
+* `stream :: Maybe Bool` field on `[[gateway]]` and `[[script_extension]]` — pipes process stdout via `StreamingResponse` instead of buffering. Constant memory; the child process is terminated if the client disconnects.
+* `as_info_lines :: Maybe Bool` field on `[[gateway]]` and `[[script_extension]]` — replaces the misnamed `menu` flag. Wraps each output line as an info-line gophermap item (`iLINE\t\t\t\r\n`).
+* `runProcess`, `mkScriptHook`, `resolveItemType`, `ScriptExtensionConfig`, `FileTypeConfig` exported from `Venusia.Routes` so library users can build streaming-process gateways and file-server hooks without going through the TOML loader.
+* `Venusia.FileHandler.serveDirectoryWith` — a variant of `serveDirectory` that takes a per-file hook (`FilePath -> IO (Maybe Response)`, returning `Just` short-circuits the default `FileResponse`) and an item-type override fn. The existing `serveDirectory` is now a thin wrapper.
+
+### Changed
+
+* **Breaking:** `[[gateway]] menu` field is **removed**. Rename `menu = true|false` to `as_info_lines = true|false` in your `routes.toml`. No alias, no deprecation period — the field is simply not parsed.
+* Process execution in gateways now flows through a single `runProcess` 2×2 dispatcher (buffered/streamed × raw/info-line-wrapped). The buffered cells preserve the exact pre-existing semantics — same output, same gopher terminator, same preamble/postamble handling — so once you've renamed `menu`, existing buffered behaviour is bit-for-bit unchanged.
+* Preamble/postamble entries are now auto-terminated with `\r\n` when `as_info_lines = true`. Previously a postamble like `["7Search\t/search\thost\t70"]` (no trailing `\r\n`) glued onto the gopher terminator, producing a malformed final line. Raw-output mode is unchanged (binary preambles, if any, stay verbatim).
+* Extension-registry lookups are now case-insensitive on both sides — `digest.LHS` matches `extension = "lhs"`, and `extension = "LHS"` in TOML still matches `digest.lhs`. The filesystem itself stays case-sensitive.
+
+### Security / hardening
+
+* **Directory-traversal guard fixed.** The pre-existing path-containment check used string-level `isPrefixOf`, so a served root of `/var/gopher` was treated as an ancestor of `/var/gopher2/secret`. With multiple `[[files]]` roots whose paths shared a string prefix, a request like `/files/../gopher2/secret` could canonicalise into the sibling and slip past the guard. Now compares `splitDirectories` of root and path so only true path ancestors match.
+* **Streaming child process is reaped, bounded.** Cleanup now sends SIGTERM, waits up to 2 seconds, then SIGKILLs via `signalProcess`. Previously a child that ignored SIGTERM could hang `waitForProcess` indefinitely, pinning the connection thread.
+* **Streaming child cannot read the daemon's stdin.** `procSpec` sets `std_in = NoStream`. The buffered path was already safe (it pipes empty input via `readCreateProcess`), but the streaming path was inheriting stdin from the parent.
+* **Streaming info-wrap is UTF-8 safe.** The read handle now has `hSetEncoding utf8` applied explicitly, so a non-UTF-8 daemon locale doesn't crash mid-stream when a script emits non-ASCII output.
+* **CRLF in script output no longer corrupts info-line items.** `streamProcessInfoWrap` strips a trailing `\r` before wrapping, so a Windows-line-ending script doesn't produce `iLINE\r\t\t\t0\r\n`.
 
 ### Changed
 
