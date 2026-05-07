@@ -75,7 +75,15 @@ jobs:
         Type=simple
         User=venusia
         Group=venusia
-        ExecStart=/usr/bin/venusia watch /var/gopher/source
+        # The 'watch' subcommand requires WATCH_DIR HOST PORT as positional args.
+        # Default below binds to loopback on port 7070 (unprivileged). To expose
+        # publicly or change the watch directory, drop a file at
+        # /etc/systemd/system/venusia.service.d/override.conf with:
+        #   [Service]
+        #   ExecStart=
+        #   ExecStart=/usr/bin/venusia watch /var/gopher/source gopher.example.com 70
+        # Then: systemctl daemon-reload && systemctl restart venusia
+        ExecStart=/usr/bin/venusia watch /var/gopher/source 127.0.0.1 7070
         Restart=on-failure
         [Install]
         WantedBy=multi-user.target
