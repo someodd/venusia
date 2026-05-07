@@ -1,105 +1,288 @@
 # O Venezia, Venaga, Venusia
 
-**Venusia** is a fast and flexible Haskell library and daemon for building servers for the [Internet Gopher Protocol](https://en.wikipedia.org/wiki/Gopher_\(protocol\)). It's designed for ease of use, powerful configuration, and extensibility.
+> *A modern gopher server in a single binary.
+> Drop a directory, raise a gopherhole — quietly, slowly,
+> while the rest of the web roars.*
 
-It works well with other tools in its ecosystem:
+[![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/someodd/venusia)](https://github.com/someodd/venusia/releases/latest)
+[![CI](https://github.com/someodd/venusia/actions/workflows/ci.yml/badge.svg)](https://github.com/someodd/venusia/actions/workflows/ci.yml)
 
-  * **Build:** Use [Bore](https://github.com/someodd/bore) for static site generation (phlogs, templates) for your gopherspace.
-  * **Rank:** Use [RYVM](https://github.com/someodd/ryvm) to rank files for search results.
+**Live demo:** [`gopher://gopher.someodd.zip`](gopher://gopher.someodd.zip) — point your favourite gopher client at it. Or just `curl gopher://gopher.someodd.zip` from a shell.
 
-## Features
+---
 
-Venusia is a complete framework for creating modern Gopherholes.
+## What it is
 
-#### As a Library
+A self-contained gopher server. Point it at a directory; it serves the directory. Add a few lines of TOML and it runs subprocesses, streams long-lived processes, and executes files by extension. The same code is also a Haskell library.
 
-  * **Declarative Routing:** Easily define routes with support for wildcards.
-  * **Built-in Handlers:** Ready-to-use handlers for directories and files.
-  * **`.gophermap` Support:** Automatically serves `.gophermap` files for custom menus.
-  * **Menu Builder:** An intuitive DSL for creating Gopher menus.
+Used in production at **gopher.someodd.zip**. Pairs with two ecosystem tools:
 
-#### As a Daemon (`venusia-exe`)
+- **[Bartleby](https://github.com/someodd/bartleby)** — a scrivener for gopherspace: walks a library, reads sidecar `.bcard` metadata, writes `.gophermap` files and atom feeds under `catalog/`. Treat your gopherhole as a card catalog, not a website. (Currently MVP.)
+- **[RYVM](https://github.com/someodd/ryvm)** — search ranking for type-7 selectors.
 
-  * **TOML Configuration:** Use a simple `routes.toml` to configure file servers and gateways.
-  * **Hot Reloading:** Watches your directory and `routes.toml`, reloading automatically on changes with no downtime.
-  * **Process Gateways:** Execute external commands (e.g., `cowsay`, `figlet`, `curl`) and serve their output.
+If you came here looking for a fast way to put a phlog online, you're in the right place. If you came here because you remember 1991 fondly, also yes.
 
-## Getting Started
+## Quickstart
 
-### Running the Daemon
+Everything below assumes a Debian-flavoured Linux. The project ships `.deb` packages that bundle the binary and a `systemd` unit.
 
-The quickest way to start is with the `venusia-exe` daemon.
+```bash
+# 1. Download the latest .deb from
+#    https://github.com/someodd/venusia/releases/latest
+sudo dpkg -i ~/Downloads/venusia_*.deb
 
-1.  **Create a `routes.toml` file:**
+# 2. Tell systemd which host and port to bind. The shipped unit doesn't
+#    set them (every deployment differs); a drop-in override is the
+#    simplest way:
+sudo systemctl edit venusia.service
+#  → in the editor that opens, paste, then save:
+#
+#    [Service]
+#    ExecStart=
+#    ExecStart=/usr/bin/venusia watch /var/gopher/source 127.0.0.1 7070
+#
+#  (empty ExecStart= clears the inherited default; the second sets the
+#   new one. systemd convention.)
 
-    This file configures your Gopher server's behavior.
+# 3. Tell Venusia to serve the directory, and drop in some content.
+sudo tee /var/gopher/source/routes.toml > /dev/null <<'EOF'
+[[files]]
+selector = ""
+path     = "/var/gopher/source"
+EOF
+echo "Hello from gopher!" | sudo tee /var/gopher/source/welcome.txt
 
-    ```toml
-    # routes.toml
+# 4. Start
+sudo systemctl restart venusia
 
-    [[files]]
-    selector = "/files/"
-    path = "/home/user/gopherhole/"
-
-    # Gateway to the 'cowsay' command.
-    [[gateway]]
-    selector = "/gateway/cowsay"
-    command = "cowsay"
-    arguments = ["$search"] # Takes a search query
-    menu = true
-    search = true
-    wildcard = false
-    ```
-
-    TODO: You can also use wildcards--a neat feature, I need to show an example!
-
-    I sugguest trying out using `.lhs` (Literate Haskell) scripts with something like:
-
-    ```toml
-    [[gateway]]
-    selector = "/gateway/something"
-    search   = false
-    menu = false
-    wildcard = false
-    command  = "runghc"
-    arguments = ["/var/gopher/output/example.lhs"]
-    ```
-
-    Note that for the above TOML config nothing is mapped to /, so to test try something like `gopher://localhost/1/files/`. Make sure to change the `path` in the example (for `[[files]]`) to a directory you wanna serve.
-
-    You may also want to know in Gopher the root selector is actually blank `""` and not `"/"`.
-
-2.  **Run the `watch` command:**
-
-    Point the watcher to your directory, host, and port.
-
-    ```bash
-    venusia watch /path/to/your/gopherhole gopher.example.com 7070
-    ```
-
-    Your Gopher server is now live. Changes to your files or `routes.toml` will be reflected instantly.
-
-### What about search support?
-
-You can use [my ryvm software](https://github.com/someodd/ryvm) as a gateway like this, in your `routes.toml`:
-
+# 5. See it
+curl gopher://127.0.0.1:7070
 ```
+
+Save a file in `/var/gopher/source/` → it shows up. That's the static-phlog story; everything else is opt-in TOML.
+
+> Don't have a Debian box? Same flow with `stack build && stack exec -- Venusia-exe watch /path/to/dir 127.0.0.1 7070` instead of the `.deb` — the `routes.toml` from step 3 goes inside `/path/to/dir`. Requires [Stack](https://docs.haskellstack.org/).
+
+## What can I do with this?
+
+| If you want to… | Add… | Skip to |
+|---|---|---|
+| Serve a directory of files | `[[files]]` | [Configuration](#configuration) |
+| Run `cowsay` (or anything) on demand | `[[gateway]]` | [Recipes](#recipes) |
+| Auto-execute `.hs` / `.sh` / `.py` files | `[[script_extension]]` | [Recipes](#recipes) |
+| Stream a long-running subprocess | `stream = true` | [Recipes](#recipes) |
+| Type-7 search results | RYVM + a tiny shell gateway | [Recipes](#recipes) |
+| Auto-rebuild on file change | watch hook + Bartleby | [Recipes](#recipes) |
+| Build a custom server in Haskell | the `Venusia` library | [Library](#building-with-the-library) |
+| Run it as a managed daemon | `.deb` + `systemd` | [Production](#production) |
+
+## Configuration
+
+The watcher looks for `routes.toml` in the watched directory.
+
+Four top-level sections, each one a list of tables.
+
+### `[[files]]` — serve a directory
+
+```toml
+[[files]]
+selector    = "/files/"     # gopher path prefix; "" is the root selector
+path        = "/var/gopher/source"
+run_scripts = false         # opt-in: see [[script_extension]] below
+```
+
+### `[[gateway]]` — bind a selector to a process
+
+```toml
 [[gateway]]
-selector = "/search"
-search = true
-wildcard = false
-menu = false
-command = "/var/gopher/source/search.sh"
+selector      = "/cowsay"
+command       = "/usr/games/cowsay"
+arguments     = ["$search"]    # $search is the type-7 query, $wildcard the * match
+wildcard      = false
+as_info_lines = true           # wrap each output line as an info-line gophermap item
+stream        = false          # set true for radio relays / large dumps / live tails
+preamble      = []             # optional: literal gophermap lines before the output
+postamble     = []             # optional: literal gophermap lines after the output
+```
+
+| Field | Meaning |
+|---|---|
+| `selector` | Gopher path. May contain a single `*` wildcard. |
+| `command` / `arguments` | What to run. `$search` → request query. `$wildcard` → wildcard match. |
+| `wildcard` | `true` if `selector` uses `*`. |
+| `stream` | Pipe stdout via `StreamingResponse` (constant memory, child terminated on disconnect). |
+| `as_info_lines` | Wrap each stdout line as `iLINE\t\t\t0\r\n`. Use when the gateway is reached via a menu-typed link. |
+| `preamble` / `postamble` | Literal gophermap rows before/after the output. Auto-terminated with `\r\n` when `as_info_lines = true`. |
+
+A search query is implied whenever `$search` appears in `arguments`; no separate `search` flag is needed.
+
+### `[[script_extension]]` — run files of a given extension
+
+Files under a `[[files]]` root with `run_scripts = true` whose extension matches an entry in this table are executed by the configured runner; their stdout becomes the response.
+
+```toml
+[[script_extension]]
+extension     = "hs"           # without leading dot; case-insensitive
+command       = "runghc"
+arguments     = ["$file"]      # $file → canonical absolute path; $search → request query
+stream        = true
+as_info_lines = false
+```
+
+The process's working directory is the file's parent directory, so `readFile "data.txt"` finds a sibling.
+
+### `[[file_type]]` — override directory-listing item types
+
+Auto-generated directory listings emit a gopher item-type character per file (`0` text, `1` menu, `9` binary, `I` image, …). This table overrides that mapping per extension.
+
+```toml
+[[file_type]]
+extension = "hs"
+item_type = "1"   # show .hs files as menu links in directory listings
+```
+
+Resolution order for the auto-generated listing:
+
+1. `[[file_type]]` for the extension, if defined.
+2. Otherwise, if `[[script_extension]]` is defined: `'1'` when `as_info_lines = true`, else `'0'`.
+3. Otherwise, the hardcoded fallback (`.txt → 0`, `.png → I`, `.html → h`, …).
+
+User-authored `.gophermap` files always win — the gophermap author wrote the type character themselves; the server doesn't second-guess.
+
+#### Why two tables?
+
+Item types describe **how something is linked to**, not **what something is**. A `.hs` file isn't intrinsically of any gopher type; it only has a type when a directory listing or gophermap *names* it. Keeping the *how to execute* config separate from the *how to list* config is one-table-one-job, and it lets you override item types for non-script extensions too.
+
+## Recipes
+
+### A library that auto-rebuilds (Venusia + Bartleby)
+
+[Bartleby](https://github.com/someodd/bartleby) walks a directory of writings, reads sidecar `.bcard` metadata, and emits `.gophermap` files and atom feeds under `catalog/`. Venusia serves the directory; the change-hook re-runs Bartleby whenever a source file changes.
+
+Library layout under `/var/gopher/library/`:
+
+```
+bartleby.conf
+recipes/
+  cheesecake.jpg
+  cheesecake.jpg.bcard         # YAML sidecar; title, dates, description
+  march-rain.txt
+  march-rain.txt.bcard
+poetry/
+  …
+catalog/                       # bartleby writes this in place
+  .gophermap
+  feed.xml
+  recipes/.gophermap
+  …
+```
+
+`bartleby.conf` (one per library, at the library root):
+
+```yaml
+hostname: gopher.example.com
+port: 70
+selector: /
+```
+
+Systemd override:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/venusia watch /var/gopher/library gopher.example.com 70 \
+            "/usr/bin/bartleby /var/gopher/library" \
+            10000000
+```
+
+The two trailing positional args are the change-hook command and a debounce delay in microseconds.
+
+`routes.toml` (in `/var/gopher/library/`):
+
+```toml
+[[files]]
+selector = ""
+path     = "/var/gopher/library"
+```
+
+Curated entry point: `gopher://host/1/catalog/`. Raw directory browsing still works at `gopher://host/1/` for readers who want to ignore the catalog and rummage.
+
+### Cowsay on demand
+
+```toml
+[[gateway]]
+selector      = "/cowsay"
+command       = "/usr/games/cowsay"
+arguments     = ["$search"]
+wildcard      = false
+as_info_lines = true
+```
+
+Reachable as `gopher://host/7/cowsay` (item type 7, takes a query). The `as_info_lines` wraps the ASCII cow as info-line items so it renders inside a gopher menu.
+
+### Auto-execute Haskell scripts
+
+Drop scripts in a directory; they run on request.
+
+```toml
+[[files]]
+selector    = "/cgi/"
+path        = "/var/gopher/scripts"
+run_scripts = true
+
+[[script_extension]]
+extension     = "hs"
+command       = "runghc"
+arguments     = ["$file"]
+stream        = true
+as_info_lines = false       # the script emits a real gophermap; don't 'i'-wrap
+
+[[file_type]]
+extension = "hs"
+item_type = "1"             # in directory listings, show .hs files as menu links
+```
+
+Now `/cgi/digest.hs` runs `runghc /var/gopher/scripts/digest.hs` and streams stdout. Sibling files (`runghc digest.hs` reading `data.txt` next to it) work because the working directory is the file's parent.
+
+### Stream an internet radio relay
+
+A `StreamingResponse` proxies bytes from an upstream socket without buffering. The simplest way is via a one-shot shell script:
+
+```toml
+[[gateway]]
+selector  = "/radio"
+command   = "/usr/local/bin/icestream.sh"
+arguments = []
+wildcard  = false
+stream    = true
+```
+
+```bash
+#!/bin/sh
+# icestream.sh
+exec curl -s --no-buffer https://stream.example.com:8000/main
+```
+
+Memory stays constant regardless of how long the listener stays connected; if they disconnect, Venusia sends `SIGTERM` (then `SIGKILL` after 2 s if necessary), so `curl` is reaped.
+
+### Search results with RYVM
+
+[RYVM](https://github.com/someodd/ryvm) ranks files; an `awk` postprocessor formats them as gopher-menu rows.
+
+```toml
+[[gateway]]
+selector  = "/search"
+command   = "/var/gopher/library/search.sh"
 arguments = ["$search"]
+wildcard  = false
 ```
 
-And here's the `/var/gopher/source/search.sh` (don't forget to `chmod +X`!):
-
-```
+```bash
 #!/usr/bin/env bash
-# search.sh <search> [HOST] [PORT]
-s="$1"; h="${2:-gopher.someodd.zip}"; p="${3:-70}"
-cd /var/gopher/output || exit 1
+# /var/gopher/library/search.sh — chmod +x me
+s="$1"; h="${2:-gopher.example.com}"; p="${3:-70}"
+cd /var/gopher/library || exit 1
 
 ryvm --ext-whitelist txt --make-relative . "$s" \
 | awk -F'\t' -v h="$h" -v p="$p" '
@@ -117,72 +300,91 @@ function is_gophermap(path,   l,ok){
   sel = ($2 && $2 != "") ? $2 : file
   score = $3
   snip = $4
-
-  t = is_gophermap(file) ? "1" : "0"     # 1 = menu (gophermap), 0 = text
+  t = is_gophermap(file) ? "1" : "0"
   printf "%s%s — %s [score %s]\t%s\t%s\t%s\r\n", t, sel, snip, score, file, h, p
 }'
 ```
 
-### Using the Library
+Reachable as `gopher://host/7/search`. The script outputs valid gophermap rows; no `as_info_lines` needed.
 
-To build a custom server, use Venusia in your own Haskell project.
+## Production
 
-1.  **Add the dependency** in `package.yaml`:
+### Installing
 
-    ```yaml
-    dependencies:
-    - Venusia
-    ```
+`.deb` packages live on the [releases page](https://github.com/someodd/venusia/releases). Each ships:
 
-2.  **Create your server:**
+- The `venusia` binary at `/usr/bin/venusia`.
+- A `systemd` unit at `/lib/systemd/system/venusia.service`.
+- Pre-install hooks that create a `venusia` system user and `/var/gopher/source/`.
 
-    ```haskell
-    -- app/Main.hs
-    module Main (main) where
+### Configuring
 
-    import Venusia.Server
-    import Venusia.MenuBuilder
-    import Venusia.FileHandler
-    import Venusia.SearchHandler
-    import qualified Data.Text as T
+The shipped unit does *not* set host or port — every deployment differs. Use `systemctl edit venusia.service` to add an override (see [Quickstart](#quickstart)).
 
-    import Control.Concurrent.MVar
-    import Data.Maybe (fromMaybe)
+For a Bartleby-integrated library, the override looks like:
 
-    host :: T.Text
-    host = "localhost"
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/bin/venusia watch /var/gopher/library gopher.example.com 70 \
+            "/usr/bin/bartleby /var/gopher/library" \
+            10000000
+```
 
-    port :: Int
-    port = 7070
+Then `sudo systemctl restart venusia`. (`systemctl edit` already reloaded the unit; no separate `daemon-reload` needed.)
 
-    -- Define server routes
-    routes :: [Route]
-    routes =
-      [ on "/hello" $ \_ ->
-          return $ TextResponse "Hello, gopher!\r\n"
+**Drop-in override vs full edit.** `systemctl edit venusia.service` (what we used in the quickstart) creates a small drop-in file under `/etc/systemd/system/venusia.service.d/`. Package upgrades won't clobber it. If you'd rather edit the entire unit file (and accept that future `.deb` upgrades to the unit file won't merge into your version), use `sudo systemctl edit --full venusia.service` instead.
 
-      , onWildcard "/echo/*" $ \req ->
-          pure $ TextResponse $ fromMaybe "Nothing." (req.reqWildcard)
+### Operating
 
-      , onWildcard "/files/*" $ \req ->
-          case req.reqWildcard of
-            Just path ->
-              serveDirectory host port "/var/gopher" "/files/" path Nothing
-            Nothing ->
-              pure $ TextResponse "No path provided."
-      ]
+- **Logs:** `journalctl -u venusia.service -f`.
+- **Connection cap:** the accept loop is bounded by a `QSem` at 256 in-flight connections (see `maxConcurrentConnections` in `Venusia.Server`). Raise it *and* the host's `ulimit -n` together if you expect more.
+- **Slow-reading client defence:** each accepted socket has Linux `TCP_USER_TIMEOUT` set to 120 s. Without this, a slow-reading client can pin a streaming response indefinitely.
+- **Hostile networks:** putting Venusia behind a reverse proxy with per-connection budgets is recommended for public-internet exposure.
 
-    -- Main entry point
-    main :: IO ()
-    main = do
-      -- Wrap routes in MVar because serveHotReload requires mutable route list
-      routesVar <- newMVar routes
+## Building with the library
 
-      -- Start the new hot-reloadable, streaming-safe server
-      serveHotReload (show port) noMatchHandler routesVar
-    ```
+The same code that powers the daemon is exposed as a Haskell library. Useful when you want behaviour the TOML doesn't cover — custom routing, dynamic content with full type safety, or embedding gopher in a larger service.
 
-## Response types
+```haskell
+-- app/Main.hs
+{-# LANGUAGE OverloadedStrings    #-}
+{-# LANGUAGE OverloadedRecordDot  #-}
+module Main (main) where
+
+import Venusia.Server
+import Venusia.FileHandler
+import qualified Data.Text as T
+import Control.Concurrent.MVar (newMVar)
+import Data.Maybe (fromMaybe)
+
+host :: T.Text
+host = "127.0.0.1"
+
+port :: Int
+port = 7070
+
+routes :: [Route]
+routes =
+  [ on "/hello" $ \_ ->
+      pure $ TextResponse "Hello, gopher!\r\n"
+
+  , onWildcard "/echo/*" $ \req ->
+      pure $ TextResponse (fromMaybe "Nothing." req.reqWildcard)
+
+  , onWildcard "/files/*" $ \req ->
+      case req.reqWildcard of
+        Just sub -> serveDirectory host port "/var/gopher/source" "/files/" sub Nothing
+        Nothing  -> pure $ TextResponse "No path provided."
+  ]
+
+main :: IO ()
+main = do
+  routesVar <- newMVar routes
+  serveHotReload (show port) noMatchHandler routesVar
+```
+
+### Response types
 
 `Venusia.Server.Response` has four constructors. Pick the one whose memory model matches your payload:
 
@@ -193,32 +395,16 @@ To build a custom server, use Venusia in your own Haskell project.
 | Static file on disk (any size) | `FileResponse` | Constant (32 KB chunks) |
 | Generated, piped, or unbounded content | `StreamingResponse` | Constant; producer chooses pacing |
 
-### Streaming responses
-
-`StreamingResponse` takes a callback `(BS.ByteString -> IO ()) -> IO ()`. The producer is given a `send` action and runs to completion. Memory stays constant regardless of how much is emitted, the producer can use `bracket` to own its own resources, and a client disconnect surfaces as an exception from `send` that tears the producer down cleanly.
-
-**Example: a counter that emits one line per second**
-
-```haskell
-import Control.Concurrent (threadDelay)
-import qualified Data.ByteString.Char8 as BS8
-
-countingRoute :: Route
-countingRoute = on "/count" $ \_ ->
-  pure $ StreamingResponse $ \send ->
-    mapM_ (\n -> send (BS8.pack ("line " <> show n <> "\r\n"))
-                 >> threadDelay 1000000) [1 :: Int .. 10]
-```
-
-**Example: relay an upstream audio stream over Gopher**
-
-This is the kind of thing the type was built for — proxy an Icecast/SHOUTcast MP3 stream as Gopher item type `9`. The `bracket` ensures the upstream connection is closed whether the listener disconnects, the upstream drops, or anything else throws:
+`StreamingResponse` takes a callback `(BS.ByteString -> IO ()) -> IO ()`. The producer is given a `send` action and runs to completion. Memory stays constant regardless of how much is emitted, and the producer can use `bracket` to own its own resources. A client disconnect surfaces as an exception from `send` and tears the producer down cleanly — eventually; for a graceful FIN the kernel may continue accepting writes briefly, with `TCP_USER_TIMEOUT` (120 s) as the backstop. Example — relay an upstream MP3 stream as item type `9`:
 
 ```haskell
 import Control.Exception (bracket)
 import Network.Socket (close)
 import Venusia.Server (streamFromHandle)
--- …open a TCP socket to the upstream and convert it to a Handle…
+
+-- openUpstream is your code: open a TCP socket to the upstream server
+-- and convert it to a 'Handle'. (System.IO.hSetBinaryMode / Network.Socket
+-- handle conversion, or Network.Connection, or whatever you prefer.)
 
 radioRoute :: Route
 radioRoute = on "/radio" $ \_ ->
@@ -227,209 +413,77 @@ radioRoute = on "/radio" $ \_ ->
       streamFromHandle upHandle send
 ```
 
-Use `streamFromHandle` (exported from `Venusia.Server`) for the common case of streaming from any `Handle` in 32 KB pieces.
+`streamFromHandle` (exported from `Venusia.Server`) is the common case for streaming any `Handle` in 32 KB pieces.
 
-### Notes on long-lived streaming
+### TOML-driven server, Haskell extras
 
-A few things to know if you're wiring something like a radio relay:
+Most TOML primitives are also library-exported, so a hybrid is straightforward:
 
-* The server caps in-flight connections at 256 (see `maxConcurrentConnections` in `Venusia.Server`). If you expect more concurrent listeners, raise both that constant and the host's `ulimit -n`.
-* Each accepted socket has Linux `TCP_USER_TIMEOUT` set to 120 s, so a stuck send fails after two minutes rather than pinning a thread + FD forever. This is the only line of defence against a slow-reading client; there is no read-side timeout once the response is in flight, since the producer's pacing is intentional.
-* For hostile-network deployments, putting Venusia behind a reverse proxy that can enforce per-connection budgets is still recommended.
+- `Venusia.Routes.runProcess` — run a subprocess as a `Response`. Two flags pick the cell of a 2×2 matrix: `stream` (buffered vs piped) × `as_info_lines` (raw vs info-line-wrapped).
+- `Venusia.Routes.mkScriptHook` — a file-extension hook, the same one `[[script_extension]]` uses internally.
+- `Venusia.FileHandler.serveDirectoryWith` — `serveDirectory` with a per-file hook (`FilePath -> IO (Maybe Response)`) and a per-extension item-type override fn. Use this if you want the script-extension behaviour from Haskell without TOML.
 
-## Verification
+## Internals
 
-### Property and integration tests
+For contributors, or for the curious.
 
-Run the full suite:
+### Tests
 
 ```bash
 stack test
 ```
 
-The suite uses [`tasty`](https://hackage.haskell.org/package/tasty) and is split into three groups:
+68 tests, three groups:
 
-* **`Venusia.Server`** — QuickCheck properties for `sanitizeSelector` (idempotent, no CR/LF in output, truncates at first line ending), `parseRequest` (selector / query split), and the `on` / `onWildcard` route matchers (exact match, wildcard capture, prefix/suffix shape).
-* **`Venusia.MenuBuilder`** — QuickCheck properties for `item` (type char prefix, CRLF suffix, exactly three tabs), `menu` / `render` (terminator), and shape tests for `info` / `error'` / `gophermapRender`.
-* **`integration`** — end-to-end tests bound to an ephemeral local socket. Each `Response` constructor is round-tripped through a real TCP connection (`TextResponse`, `BinaryResponse`, `FileResponse` with a multi-256KB file, `StreamingResponse` over an 8 MB generated body). RFC behaviours (embedded CRLF in the request line, empty selector, type-7 tab queries) are exercised. FD-leak resilience is checked by hammering a route whose streaming producer throws partway through, plus 200 sequential round-trips.
+- **`Venusia.Server`** — QuickCheck properties for `sanitizeSelector`, `parseRequest`, and the `on` / `onWildcard` matchers.
+- **`Venusia.MenuBuilder`** — properties for `item`, `menu` / `render` (terminator), and shape tests for `info` / `error'` / `gophermapRender`.
+- **`integration`** — end-to-end tests against a real local socket: each `Response` constructor round-tripped (8 MB streaming body, 256 KB file), RFC behaviours (CRLF in request, type-7 tab queries, empty selector), FD-leak resilience, the `runProcess` 2×2, the file-server hook, the directory-traversal guard, disconnect-kills-child, and the substitution contract.
 
 ### LiquidHaskell refinements
 
-The codebase has a small set of [LiquidHaskell](https://ucsd-progsys.github.io/liquidhaskell/) refinements at the *boundaries* — the inputs and outputs that interact with the outside world. They sit in `{-@ ... @-}` comments which GHC ignores; running `liquid` checks them.
+A small set of [LiquidHaskell](https://ucsd-progsys.github.io/liquidhaskell/) refinements live as comments on boundary constants — values that interact with the kernel or socket layer. They're inert to GHC; running `liquid` checks them.
 
 Currently refined:
 
-* `chunkSize :: {v:Int | v > 0}` (the streaming chunk size)
-* `readTimeoutMicros :: {v:Int | v > 0}` (the slowloris guard)
+- `chunkSize :: {v:Int | v > 0}` (streaming chunk size)
+- `readTimeoutMicros :: {v:Int | v > 0}` (slowloris guard)
+- `maxConcurrentConnections :: {v:Int | v > 0}` (connection cap)
+- `connectionWriteTimeoutMillis :: {v:Int | v > 0}` (write-side timeout)
+- `cleanupGracePeriod :: {v:Int | v > 0}` (SIGTERM grace before SIGKILL)
 
-Documented as extension points (not yet active until a `containsCRLF` measure is defined):
+Documented as an extension point (waiting on a `containsCRLF` measure):
 
-* `sanitizeSelector` postcondition — the output contains no CR or LF byte. The corresponding QuickCheck property runs on every `stack test`.
+- `sanitizeSelector` postcondition — the output contains no CR or LF byte. The corresponding QuickCheck property runs on every `stack test`.
 
 To verify locally:
 
 ```bash
-# install the verifier (one-time; needs z3 on PATH)
-cabal install liquidhaskell
-
-# check a module
+cabal install liquidhaskell        # one-time; needs z3 on PATH
 liquid -i src src/Venusia/Server.hs
 ```
 
-## Debian Packages & `systemd`
+### Hardening
 
-For production, [Venusia offers Debian packages](https://github.com/someodd/venusia/releases) with `systemd` support to run as a managed daemon.
+- Concurrent-connection cap (256) bounds FD usage under floods.
+- `TCP_USER_TIMEOUT` on accepted sockets reaps stuck writes.
+- Streaming children are reaped via `bracket`: SIGTERM, 2 s grace, SIGKILL.
+- Streaming children's stdin is closed (`NoStream`); they cannot read the daemon's stdin.
+- Selectors are sanitised at the first CR/LF (RFC 1436); embedded line endings cannot smuggle a second request.
+- Directory traversal is checked on path components, not raw strings (no `/var/gopher` masquerading as an ancestor of `/var/gopher2/...`).
 
-After installing a package, you can edit the service configuration at `/lib/systemd/system/venusia.service`. For example, to integrate with `bore`, you could change the `ExecStart` line to:
+## Changelog
 
-```
-ExecStart=/usr/bin/venusia watch /var/gopher/source gopher.someodd.zip 7071 "/usr/bin/bore build --source /var/gopher/source --output /var/gopher/output" 10000000
-```
+See [CHANGELOG.md](CHANGELOG.md). The project follows the [Haskell Package Versioning Policy](https://pvp.haskell.org/) and [Keep a Changelog](https://keepachangelog.com/).
 
-Then, reload the `systemd` daemon and restart the service:
+## Contributing
 
-```
-sudo systemctl daemon-reload
-sudo systemctl restart venusia.service
-```
+Issues and pull requests welcome at <https://github.com/someodd/venusia>. The `master` branch is what runs at gopher.someodd.zip; CI on every push must be green for merges. New features should come with tests in `test/Test/Venusia/`.
 
-## Configuration (`routes.toml`)
+## License
 
-Configure the daemon by defining routes in `routes.toml`. The four
-top-level sections are `[[files]]`, `[[gateway]]`, `[[script_extension]]`,
-and `[[file_type]]`.
+BSD-3-Clause. See [LICENSE](LICENSE).
 
-### `[[files]]` — serve a directory
+---
 
-  * `selector`: gopher path prefix (e.g. `/files/`). The empty string `""`
-    is the gopher root.
-  * `path`: local directory to serve.
-  * `run_scripts` *(optional, default `false`)*: when `true`, files whose
-    extension matches a registered `[[script_extension]]` are **executed**
-    instead of served as source. Opt-in per root for safety — a typo or a
-    later-added directory of source viewers can't accidentally start
-    running things.
-
-### `[[gateway]]` — bind a selector to a process
-
-  * `selector`: gopher path; may include a single wildcard (`*`).
-  * `command` / `arguments`: what to run. `$search` is replaced with the
-    request query (type-7 input); `$wildcard` is replaced with whatever
-    matched the `*` in `selector`.
-  * `wildcard`: set to `true` if `selector` contains `*`.
-  * `stream` *(optional, default `false`)*: pipe the process's stdout
-    straight to the client via `StreamingResponse` (constant memory; the
-    producer paces the response). The child is terminated if the client
-    disconnects. Use this for radio relays, large dumps, live tails.
-  * `as_info_lines` *(optional, default `false`)*: wrap each output line
-    as an info-line gophermap item (`iLINE\t\t\t\r\n`). Use when the
-    gateway is reached via a menu-typed link and the process emits plain
-    text that needs to render cleanly inside a gophermap.
-  * `preamble` / `postamble` *(optional)*: lists of literal gophermap
-    lines emitted before/after the process output.
-
-### `[[script_extension]]` — run files of an extension
-
-Active under any `[[files]]` root that has `run_scripts = true`. When a
-request resolves to a file whose extension matches, the runner executes
-the file and the stdout becomes the response.
-
-  * `extension`: the extension to match, **without the leading dot**
-    (e.g. `"lhs"`).
-  * `command` / `arguments`: what to run. `$file` is replaced with the
-    canonical absolute path of the matched file; `$search` with the
-    request query (if any). The process's working directory defaults to
-    the directory containing the file, so sibling-file reads work.
-  * `stream`, `as_info_lines`: same semantics as on `[[gateway]]`.
-
-```toml
-[[script_extension]]
-extension     = "hs"
-command       = "runghc"
-arguments     = ["$file"]
-stream        = true
-as_info_lines = false
-```
-
-### `[[file_type]]` — override the directory-listing item type
-
-Auto-generated directory listings emit a gopher item-type character for
-each file (`0` for text, `1` for menu, `9` for binary, `I` for image,
-…). This table overrides the default per extension.
-
-  * `extension`: extension without leading dot.
-  * `item_type`: one-character gopher type code as a TOML string (e.g.
-    `"0"`, `"1"`, `"9"`).
-
-```toml
-[[file_type]]
-extension = "hs"
-item_type = "0"
-
-[[file_type]]
-extension = "csv"
-item_type = "0"
-```
-
-#### Why a separate table from `[[script_extension]]`?
-
-Item types describe **how something is linked to**, not **what something
-is**. A `.lhs` file isn't intrinsically of any gopher type; it only has a
-type when a directory listing or a gophermap *names* it. Keeping the
-"how to execute" config (`[[script_extension]]`) separate from the "how
-to list" config (`[[file_type]]`) is one-table-one-job and lets you
-override item types for non-script extensions too.
-
-When both apply, `[[file_type]]` wins. Resolution order for the
-auto-generated directory listing:
-
-1. `[[file_type]]` for the extension, if defined.
-2. Otherwise, if `[[script_extension]]` is defined: `'1'` when
-   `as_info_lines = true`, else `'0'`.
-3. Otherwise, the hardcoded fallback (`.txt → 0`, `.png → I`, …).
-
-User-authored `.gophermap` files always win — the gophermap author wrote
-the type character themselves, and the server doesn't second-guess.
-
-### A worked script example
-
-Lay out a directory like this:
-
-```
-/var/gopher/scripts/
-  digest.hs        # outputs a gophermap, runs via runghc
-  status.sh        # outputs plain text, runs via /bin/sh
-  README.txt       # plain text, served verbatim (no [[script_extension]] for .txt)
-```
-
-`routes.toml`:
-
-```toml
-[[files]]
-selector    = "/cgi/"
-path        = "/var/gopher/scripts/"
-run_scripts = true
-
-[[script_extension]]
-extension     = "hs"
-command       = "runghc"
-arguments     = ["$file"]
-stream        = true
-as_info_lines = false        # script emits a real gophermap, don't 'i'-wrap
-
-[[script_extension]]
-extension     = "sh"
-command       = "/bin/sh"
-arguments     = ["$file"]
-stream        = true
-as_info_lines = true         # script emits plain text, wrap as info items
-
-[[file_type]]
-extension = "hs"
-item_type = "1"              # show as a menu link (overrides script_extension default '0')
-```
-
-A client that pulls `/cgi/digest.hs` gets the script's stdout, streamed.
-A client that pulls `/cgi/README.txt` gets the file as text. A directory
-listing of `/cgi/` shows `digest.hs` as item type `1`, `status.sh` as
-`'1'` (from `as_info_lines = true`), and `README.txt` as `'0'`.
+*A protocol older than the web, quieter than the web.
+A server that intends to be small forever.*
