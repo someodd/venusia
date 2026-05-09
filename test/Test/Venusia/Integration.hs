@@ -39,6 +39,7 @@ import Venusia.Routes
   , resolveItemType
   , routesConfigCodec
   , runProcess
+  , splitForPathInfo
   )
 import qualified Toml
 
@@ -91,6 +92,18 @@ tests = testGroup "integration"
                                                              test_scriptExtensionSelectorSubstitution
   , testCase "script_extension unrecognized tokens pass through verbatim"
                                                              test_scriptExtensionTokenPassthrough
+  , testCase "$pathinfo carries the path-info suffix to the script"
+                                                             test_scriptExtensionPathInfo
+  , testCase "$pathinfo is empty when the request addresses the script directly"
+                                                             test_scriptExtensionPathInfoEmpty
+  , testCase "$pathinfo is \"/\" when the request has a bare trailing slash"
+                                                             test_scriptExtensionPathInfoTrailingSlash
+  , testCase "wildcard with no real script-prefix file falls through (no spurious exec)"
+                                                             test_scriptExtensionPathInfoNoFile
+  , testCase "$pathinfo and $search coexist when both are present"
+                                                             test_scriptExtensionPathInfoSearchCoexists
+  , testCase "path-info wildcard with .. traversal is rejected, not split"
+                                                             test_scriptExtensionPathInfoTraversalGuard
   , testCase "tomland decodes [[files.script_extension]] + [[files.file_type]] nested arrays"
                                                              test_tomlandNestedArrayDecode
   ]
@@ -342,7 +355,7 @@ test_scriptHookExecutesFile =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing ""
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -373,7 +386,7 @@ test_scriptHookFallsThrough =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing ""
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -404,7 +417,7 @@ test_scriptStreamingExecution =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing ""
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -646,7 +659,7 @@ test_scriptExtensionSearchSubstitution =
           [ onWildcard "/files/*" $ \req ->
               -- Mirror the per-request hook construction that
               -- 'createFileHandler' performs in production.
-              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery
+              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery ""
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
@@ -681,7 +694,7 @@ test_scriptExtensionSelectorSubstitution =
           [ onWildcard "/files/*" $ \req ->
               -- Mirror createFileHandler: build the hook per-request so
               -- it captures req.reqSelector.
-              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery
+              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery ""
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
@@ -694,9 +707,9 @@ test_scriptExtensionSelectorSubstitution =
                  (BS.isInfixOf "selector-was: /files/marker.sh" resp)
 
 -- | Negative: a token /not/ part of the documented substitution surface
--- (currently $file, $selector, $search) is passed through verbatim.
--- Guards against later "harmless" additions silently consuming a literal
--- string a script-author intended to receive as-is.
+-- (currently $file, $selector, $search, $pathinfo) is passed through
+-- verbatim. Guards against later "harmless" additions silently consuming
+-- a literal string a script-author intended to receive as-is.
 test_scriptExtensionTokenPassthrough :: Assertion
 test_scriptExtensionTokenPassthrough =
   withSystemTempDirectory "venusia-subst-passthrough" $ \dir -> do
@@ -711,7 +724,7 @@ test_scriptExtensionTokenPassthrough =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing ""
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -725,9 +738,231 @@ test_scriptExtensionTokenPassthrough =
       resp <- gopherRoundtrip port "/files/marker.sh\r\n"
       -- $wildcard is not in script_extension's substitution surface
       -- (per substituteScriptArg's documented list) — only $file,
-      -- $selector, $search are.
+      -- $selector, $search, $pathinfo are.
       assertBool "unrecognized $-token reaches the script verbatim"
                  (BS.isInfixOf "$wildcard" resp)
+
+-- | Path-info: a request like @/files/wiki.lhs/Page/SubPage@ executes
+-- @wiki.lhs@ and threads @/Page/SubPage@ into @$pathinfo@. The route
+-- wiring below mirrors what 'createFileHandler' does in production:
+-- 'splitForPathInfo' picks the script-prefix\/path-info split, then
+-- 'mkScriptHook' is built with the carved-out suffix.
+test_scriptExtensionPathInfo :: Assertion
+test_scriptExtensionPathInfo =
+  withSystemTempDirectory "venusia-pathinfo" $ \dir -> do
+    let scriptPath = dir </> "wiki.lhs"
+    writeFile scriptPath ""
+    let scriptExts =
+          [ ScriptExtensionConfig
+              { extension   = "lhs"
+              , command     = "/bin/echo"
+              , arguments   = ["pathinfo:", "$pathinfo"]
+              , stream      = Nothing
+              , asInfoLines = Nothing
+              }
+          ]
+        itemTypeFn = resolveItemType [] scriptExts
+        routes =
+          [ onWildcard "/files/*" $ \req ->
+              case req.reqWildcard of
+                Just wp -> do
+                  (sw, pInfo) <- splitForPathInfo dir scriptExts wp
+                  let hook = mkScriptHook scriptExts req.reqSelector
+                                          req.reqQuery pInfo
+                  serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
+                    Nothing hook itemTypeFn
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/files/wiki.lhs/Page/SubPage\r\n"
+      assertBool "$pathinfo carries the suffix"
+                 (BS.isInfixOf "pathinfo: /Page/SubPage" resp)
+
+-- | Path-info empty case: when the request addresses the script
+-- directly with no trailing components, @$pathinfo@ is the empty
+-- string. @\/bin\/echo@ collapses adjacent argument boundaries, so the
+-- output reads @\"pathinfo: \\n\"@ (token gone, separator preserved).
+test_scriptExtensionPathInfoEmpty :: Assertion
+test_scriptExtensionPathInfoEmpty =
+  withSystemTempDirectory "venusia-pathinfo-empty" $ \dir -> do
+    let scriptPath = dir </> "wiki.lhs"
+    writeFile scriptPath ""
+    let scriptExts =
+          [ ScriptExtensionConfig
+              { extension   = "lhs"
+              , command     = "/bin/echo"
+              , arguments   = ["pathinfo:[", "$pathinfo", "]end"]
+              , stream      = Nothing
+              , asInfoLines = Nothing
+              }
+          ]
+        itemTypeFn = resolveItemType [] scriptExts
+        routes =
+          [ onWildcard "/files/*" $ \req ->
+              case req.reqWildcard of
+                Just wp -> do
+                  (sw, pInfo) <- splitForPathInfo dir scriptExts wp
+                  let hook = mkScriptHook scriptExts req.reqSelector
+                                          req.reqQuery pInfo
+                  serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
+                    Nothing hook itemTypeFn
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/files/wiki.lhs\r\n"
+      -- The middle token expands to "" so we see the brackets touching
+      -- a single space (echo joins args with one space).
+      assertBool "$pathinfo is empty when no suffix is present"
+                 (BS.isInfixOf "pathinfo:[  ]end" resp)
+
+-- | Path-info trailing-slash distinction: @\/cgi\/wiki.lhs\/@ is treated
+-- as path-info @\/@ (not empty), matching CGI's PATH_INFO convention so
+-- the script can tell "addressed with trailing slash" from "addressed
+-- without".
+test_scriptExtensionPathInfoTrailingSlash :: Assertion
+test_scriptExtensionPathInfoTrailingSlash =
+  withSystemTempDirectory "venusia-pathinfo-slash" $ \dir -> do
+    let scriptPath = dir </> "wiki.lhs"
+    writeFile scriptPath ""
+    let scriptExts =
+          [ ScriptExtensionConfig
+              { extension   = "lhs"
+              , command     = "/bin/echo"
+              , arguments   = ["pathinfo:[", "$pathinfo", "]end"]
+              , stream      = Nothing
+              , asInfoLines = Nothing
+              }
+          ]
+        itemTypeFn = resolveItemType [] scriptExts
+        routes =
+          [ onWildcard "/files/*" $ \req ->
+              case req.reqWildcard of
+                Just wp -> do
+                  (sw, pInfo) <- splitForPathInfo dir scriptExts wp
+                  let hook = mkScriptHook scriptExts req.reqSelector
+                                          req.reqQuery pInfo
+                  serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
+                    Nothing hook itemTypeFn
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/files/wiki.lhs/\r\n"
+      assertBool "$pathinfo is '/' for a bare trailing slash"
+                 (BS.isInfixOf "pathinfo:[ / ]end" resp)
+
+-- | When the segment ending in a registered script extension does NOT
+-- correspond to a real file (e.g. @nope.lhs@ doesn't exist), the wildcard
+-- is /not/ split: the request falls through to ordinary file resolution
+-- and the script never runs. Guards against speculative execution on
+-- mistyped paths and against directories whose name happens to end with
+-- a registered extension.
+test_scriptExtensionPathInfoNoFile :: Assertion
+test_scriptExtensionPathInfoNoFile =
+  withSystemTempDirectory "venusia-pathinfo-nofile" $ \dir -> do
+    -- Deliberately create no .lhs file. Any execution would be a bug.
+    let scriptExts =
+          [ ScriptExtensionConfig
+              { extension   = "lhs"
+              , command     = "/bin/echo"
+              , arguments   = ["should-not-run"]
+              , stream      = Nothing
+              , asInfoLines = Nothing
+              }
+          ]
+        itemTypeFn = resolveItemType [] scriptExts
+        routes =
+          [ onWildcard "/files/*" $ \req ->
+              case req.reqWildcard of
+                Just wp -> do
+                  (sw, pInfo) <- splitForPathInfo dir scriptExts wp
+                  let hook = mkScriptHook scriptExts req.reqSelector
+                                          req.reqQuery pInfo
+                  serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
+                    Nothing hook itemTypeFn
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/files/nope.lhs/foo\r\n"
+      assertBool "no script execution when prefix doesn't resolve to a real file"
+                 (not (BS.isInfixOf "should-not-run" resp))
+
+-- | Path-info and $search are independent. A request like
+-- @/files/wiki.lhs/Page\\tquery@ populates @$pathinfo = \"\/Page\"@ and
+-- @$search = \"query\"@ — neither one bleeds into the other.
+test_scriptExtensionPathInfoSearchCoexists :: Assertion
+test_scriptExtensionPathInfoSearchCoexists =
+  withSystemTempDirectory "venusia-pathinfo-search" $ \dir -> do
+    let scriptPath = dir </> "wiki.lhs"
+    writeFile scriptPath ""
+    let scriptExts =
+          [ ScriptExtensionConfig
+              { extension   = "lhs"
+              , command     = "/bin/echo"
+              , arguments   = ["pi=", "$pathinfo", "q=", "$search"]
+              , stream      = Nothing
+              , asInfoLines = Nothing
+              }
+          ]
+        itemTypeFn = resolveItemType [] scriptExts
+        routes =
+          [ onWildcard "/files/*" $ \req ->
+              case req.reqWildcard of
+                Just wp -> do
+                  (sw, pInfo) <- splitForPathInfo dir scriptExts wp
+                  let hook = mkScriptHook scriptExts req.reqSelector
+                                          req.reqQuery pInfo
+                  serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
+                    Nothing hook itemTypeFn
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/files/wiki.lhs/Page\thello\r\n"
+      assertBool "$pathinfo and $search are populated independently"
+                 (BS.isInfixOf "pi= /Page q= hello" resp)
+
+-- | Defence in depth around the bounds check: a wildcard whose script-prefix
+-- segment, after canonicalisation, escapes the served root must never run.
+-- 'splitForPathInfo' rejects the candidate at its own bounds check, the
+-- wildcard then falls through to 'serveDirectoryWith' unsplit, and that
+-- function's bounds check rejects the request with an access-denied
+-- response.
+test_scriptExtensionPathInfoTraversalGuard :: Assertion
+test_scriptExtensionPathInfoTraversalGuard =
+  withSystemTempDirectory "venusia-pathinfo-traversal" $ \parent -> do
+    -- Lay out a sibling .lhs file *outside* the served root: served root is
+    -- parent/served, the lure is parent/escape.lhs. A naive split would
+    -- attempt to execute it.
+    let servedRoot = parent </> "served"
+        outsider   = parent </> "escape.lhs"
+    createDirectoryIfMissing True servedRoot
+    writeFile outsider ""
+    let scriptExts =
+          [ ScriptExtensionConfig
+              { extension   = "lhs"
+              , command     = "/bin/echo"
+              , arguments   = ["should-not-run"]
+              , stream      = Nothing
+              , asInfoLines = Nothing
+              }
+          ]
+        itemTypeFn = resolveItemType [] scriptExts
+        routes =
+          [ onWildcard "/files/*" $ \req ->
+              case req.reqWildcard of
+                Just wp -> do
+                  (sw, pInfo) <- splitForPathInfo servedRoot scriptExts wp
+                  let hook = mkScriptHook scriptExts req.reqSelector
+                                          req.reqQuery pInfo
+                  serveDirectoryWith "127.0.0.1" 7070 servedRoot "/files/" sw
+                    Nothing hook itemTypeFn
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/files/../escape.lhs/x\r\n"
+      assertBool "outside-root script not executed"
+                 (not (BS.isInfixOf "should-not-run" resp))
+      assertBool "request rejected with access-denied response"
+                 (BS.isInfixOf "Access denied" resp)
 
 -- | Verifies tomland actually parses nested array-of-tables for
 -- [[files.script_extension]] and [[files.file_type]]. This is the

@@ -133,7 +133,7 @@ path     = "/var/gopher/output/cgi/"
   [[files.script_extension]]
   extension     = "hs"           # without leading dot; case-insensitive
   command       = "runghc"
-  arguments     = ["$file", "$selector", "$search"]
+  arguments     = ["$file", "$selector", "$search", "$pathinfo"]
   stream        = true
   as_info_lines = false
 ```
@@ -143,6 +143,7 @@ path     = "/var/gopher/output/cgi/"
 | `$file` | Canonical absolute path to the script on disk. |
 | `$selector` | Gopher selector that resolved to this script (e.g. `/cgi/figlet.hs`). Use it to emit menu items pointing back at the script without hardcoding its path. |
 | `$search` | The request's query string (after the tab), or empty. |
+| `$pathinfo` | Selector portion *after* the script filename, with a leading slash. A request for `/cgi/wiki.hs/Page/SubPage` runs `wiki.hs` with `$pathinfo = /Page/SubPage`; a request for `/cgi/wiki.hs/` gives `/`; `/cgi/wiki.hs` gives the empty string. Lets one script back a whole virtual sub-tree without one route per page. Modeled on CGI's `PATH_INFO`. |
 
 The process's working directory is the file's parent directory, so `readFile "data.txt"` finds a sibling.
 

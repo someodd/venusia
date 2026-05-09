@@ -8,6 +8,16 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.8.0.0 - 2026-05-09
+
+### Added
+
+* **`$pathinfo` substitution for `[[files.script_extension]]`.** A request for `/cgi/wiki.lhs/Page/SubPage` now executes `wiki.lhs` (instead of 404'ing) and exposes `/Page/SubPage` to the script via the new `$pathinfo` placeholder. A trailing slash with nothing after it (`/cgi/wiki.lhs/`) yields `/`; a request that addresses the script directly (`/cgi/wiki.lhs`) yields the empty string. The split happens before disk resolution: the script-prefix is canonicalised and bounds-checked exactly as today, and the path-info bytes never participate in file lookup — they reach only the script, the same way `$search` does. Lets a single script back a whole virtual sub-tree (wikis, hierarchical browsers) without declaring one `[[files]]` block per page. Modeled on CGI's `PATH_INFO`.
+
+### Changed
+
+* **`mkScriptHook` now takes a path-info argument** (breaking for direct library users — but the only documented call site is via `[[files.script_extension]]`, which has been updated). Pass `""` to opt out and preserve previous behaviour.
+
 ## 0.7.1.0 - 2026-05-07
 
 ### Fixed

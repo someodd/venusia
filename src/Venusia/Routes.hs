@@ -15,6 +15,7 @@ module Venusia.Routes
   , runProcess
   , resolveItemType
   , mkScriptHook
+  , splitForPathInfo
   , ScriptExtensionConfig (..)
   , FileTypeConfig (..)
   , FilesConfig (..)
@@ -24,11 +25,13 @@ module Venusia.Routes
 
 import           Control.Exception          (SomeException, bracket, catch, try)
 import qualified Data.ByteString            as BS
+import           Data.List                  (isPrefixOf)
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as TE
 import qualified Data.Text.IO               as TIO
 import           Data.Maybe                 (fromMaybe)
 import qualified System.Process             as P
+import           System.Directory           (canonicalizePath, doesFileExist)
 import           System.IO                  (Handle, hIsEOF,
                                              hSetBinaryMode, hSetEncoding,
                                              utf8)
@@ -43,7 +46,8 @@ import           Control.Monad              (forM_, unless)
 import qualified Toml
 import           Toml                       (TomlCodec, (.=))
 
-import           System.FilePath            (takeDirectory, takeExtension)
+import           System.FilePath            (splitDirectories, takeDirectory,
+                                             takeExtension, (</>))
 
 import           Venusia.MenuBuilder        (error', info, render)
 import           Venusia.Server             (Handler, Request (..), Response (..),
@@ -110,15 +114,17 @@ data FilesConfig = FilesConfig
 -- | A file-extension-driven script runner. When a request resolves to a file
 -- whose extension matches a 'ScriptExtensionConfig' in the serving
 -- 'FilesConfig'.scriptExtensions list, the configured command is invoked
--- with the file path substituted into @$file@ (and the request query into
--- @$search@); the process output becomes the response.
+-- with the request's substitution tokens expanded into 'arguments' (see
+-- 'substituteScriptArg' for the supported tokens); the process output
+-- becomes the response.
 data ScriptExtensionConfig = ScriptExtensionConfig
   { extension   :: T.Text
   -- ^ Extension to match, without the leading dot (e.g. @"lhs"@).
   , command     :: T.Text
   , arguments   :: [T.Text]
-  -- ^ Argument template; @$file@ is replaced with the canonical absolute
-  -- file path, @$search@ with the request query (if any).
+  -- ^ Argument template. Each entry is run through 'substituteScriptArg'
+  -- before exec; the supported tokens are @$file@, @$selector@, @$search@,
+  -- and @$pathinfo@.
   , stream      :: Maybe Bool
   , asInfoLines :: Maybe Bool
   } deriving (Show, Eq, Generic)
@@ -270,38 +276,113 @@ createFileHandler
 createFileHandler config globalFileTypes host port request =
   case request.reqWildcard of
     Just wildcard -> do
-      let scriptExts     = config.scriptExtensions
+      let scriptExts      = config.scriptExtensions
           mergedFileTypes = config.fileTypes ++ globalFileTypes
-          fileHook       = if null scriptExts
-                             then \_ -> pure Nothing
-                             else mkScriptHook scriptExts request.reqSelector request.reqQuery
-          itemTypeFn     = resolveItemType mergedFileTypes scriptExts
-      serveDirectoryWith host port config.path config.selector wildcard Nothing
-        fileHook itemTypeFn
+          itemTypeFn      = resolveItemType mergedFileTypes scriptExts
+      -- When the block has no script extensions, scripts are disabled;
+      -- skip the path-info walk entirely (no canonicalise/stat overhead)
+      -- and serve as static content. Otherwise split the wildcard on the
+      -- first script-extension boundary so a request like
+      -- @wiki.lhs/Page/SubPage@ runs @wiki.lhs@ with @\/Page\/SubPage@
+      -- threaded into @$pathinfo@.
+      if null scriptExts
+        then serveDirectoryWith host port config.path config.selector wildcard
+               Nothing (\_ -> pure Nothing) itemTypeFn
+        else do
+          (scriptWildcard, pathInfo) <-
+            splitForPathInfo config.path scriptExts wildcard
+          let fileHook = mkScriptHook scriptExts request.reqSelector
+                                      request.reqQuery pathInfo
+          serveDirectoryWith host port config.path config.selector scriptWildcard
+            Nothing fileHook itemTypeFn
     Nothing       -> pure $ TextResponse "Error: No path provided for file handler."
+
+-- | Detect a path-info boundary in the request wildcard.
+--
+-- Walks the wildcard left-to-right one @\/@-separated segment at a time. The
+-- first segment whose extension matches a registered 'ScriptExtensionConfig'
+-- /and/ whose accumulated prefix resolves to a real regular file under
+-- @root@ becomes the split point: everything up to and including that
+-- segment is the script-prefix wildcard; everything after becomes the
+-- path-info string.
+--
+-- * No match → @(wildcard, \"\")@. Behaviour is identical to passing the
+--   full wildcard straight through to 'serveDirectoryWith'.
+-- * Match with no remainder (@\"script.lhs\"@) → @(\"script.lhs\", \"\")@.
+-- * Match with empty trailing segment (@\"script.lhs\/\"@) →
+--   @(\"script.lhs\", \"\/\")@. The trailing slash is preserved as a
+--   distinguishable path-info value, matching CGI's @PATH_INFO@ convention.
+-- * Match with remainder (@\"script.lhs\/foo\/bar\"@) →
+--   @(\"script.lhs\", \"\/foo\/bar\")@.
+--
+-- For each candidate the walk canonicalises and bounds-checks the prefix
+-- against @root@ /before/ touching the filesystem with 'doesFileExist', so
+-- a wildcard with @..@ traversals cannot be used to probe for files
+-- outside the served root. 'serveDirectoryWith' will re-canonicalise and
+-- re-check the script prefix it ultimately receives, so the path-info
+-- bytes never participate in disk access — they reach only the script,
+-- just like @$search@.
+splitForPathInfo
+  :: FilePath
+  -> [ScriptExtensionConfig]
+  -> T.Text
+  -> IO (T.Text, T.Text)
+splitForPathInfo root scriptExts wildcard = do
+  rootC <- canonicalizePath root
+  let segs       = T.splitOn "/" wildcard
+      candidates = [ i | (i, s) <- zip [0 ..] segs, hasScriptExt s ]
+
+      hasScriptExt s = case lookupExt (extKey (T.unpack s)) scriptExts of
+        Just _  -> True
+        Nothing -> False
+
+      tryCandidates [] = pure (wildcard, T.empty)
+      tryCandidates (i : is) = do
+        let prefixSegs = take (i + 1) segs
+            restSegs   = drop (i + 1) segs
+            prefixText = T.intercalate "/" prefixSegs
+            relText    = T.dropWhile (== '/') prefixText
+            diskPath   = root </> T.unpack relText
+        pathC <- canonicalizePath diskPath
+        if not (splitDirectories rootC `isPrefixOf` splitDirectories pathC)
+          then tryCandidates is
+          else do
+            isFile <- doesFileExist diskPath
+            if not isFile
+              then tryCandidates is
+              else
+                let pathInfo = case restSegs of
+                      [] -> T.empty
+                      rs -> "/" <> T.intercalate "/" rs
+                in pure (prefixText, pathInfo)
+
+  tryCandidates candidates
 
 -- | Build a file hook that consults the script-extension registry. The
 -- returned hook short-circuits 'serveDirectoryWith' when the requested
 -- file's extension is registered for execution; otherwise it returns
 -- 'Nothing' and the file is served verbatim.
 --
--- The hook captures both the gopher selector that resolved to this script
--- (used for @$selector@ substitution so the script can generate menu items
--- that link back to itself without hardcoding its own path) and the
--- request's @$search@ query (so type-7-style invocations see the user's
--- input).
+-- The hook captures the gopher selector that resolved to this script (for
+-- @$selector@ substitution so the script can generate menu items linking
+-- back to itself without hardcoding its own path), the request's @$search@
+-- query (so type-7-style invocations see the user's input), and the
+-- @$pathinfo@ string carved out of the wildcard by 'splitForPathInfo'
+-- (empty when the request did not address a virtual sub-path under the
+-- script).
 mkScriptHook
   :: [ScriptExtensionConfig]
   -> T.Text                   -- ^ request selector (for @$selector@ substitution)
   -> Maybe T.Text             -- ^ optional search query (for @$search@)
+  -> T.Text                   -- ^ path-info suffix (for @$pathinfo@); @\"\"@ when none
   -> FilePath
   -> IO (Maybe Response)
-mkScriptHook specs reqSelector mQuery filePath =
+mkScriptHook specs reqSelector mQuery pathInfo filePath =
   case lookupExt (extKey filePath) specs of
     Nothing   -> pure Nothing
     Just spec -> do
       let processedArgs =
-            map (T.unpack . substituteScriptArg (T.pack filePath) reqSelector mQuery)
+            map (T.unpack . substituteScriptArg (T.pack filePath) reqSelector mQuery pathInfo)
                 spec.arguments
       Just <$> runProcess
                  (fromMaybe False spec.stream)
@@ -361,8 +442,8 @@ singleChar t = case T.uncons t of
   Just (c, rest) | T.null rest -> Just c
   _                            -> Nothing
 
--- | Replace @$file@, @$selector@, and @$search@ in a script-extension
--- argument template.
+-- | Replace @$file@, @$selector@, @$search@, and @$pathinfo@ in a
+-- script-extension argument template.
 --
 -- * @$file@ — canonical absolute path to the script on disk.
 -- * @$selector@ — gopher selector that resolved to this script, e.g.
@@ -370,13 +451,16 @@ singleChar t = case T.uncons t of
 --   the script itself (search prompts, refresh links) without hardcoding
 --   the path.
 -- * @$search@ — the request's query string after the tab, or empty.
---
--- (No @$wildcard@: the file path itself is what the wildcard matched.)
-substituteScriptArg :: T.Text -> T.Text -> Maybe T.Text -> T.Text -> T.Text
-substituteScriptArg filePath reqSelector mQuery =
+-- * @$pathinfo@ — the portion of the selector after the script filename
+--   (e.g. @\/Page\/SubPage@ for selector @\/cgi\/wiki.lhs\/Page\/SubPage@),
+--   with a leading slash. Empty when the request addressed the script
+--   directly. Modeled on CGI's @PATH_INFO@.
+substituteScriptArg :: T.Text -> T.Text -> Maybe T.Text -> T.Text -> T.Text -> T.Text
+substituteScriptArg filePath reqSelector mQuery pathInfo =
     T.replace "$file"     filePath
       . T.replace "$selector" reqSelector
       . T.replace "$search"   (fromMaybe "" mQuery)
+      . T.replace "$pathinfo" pathInfo
 
 -- | Creates a handler for a command gateway configuration.
 createCommandHandler :: GatewayConfig -> Handler
