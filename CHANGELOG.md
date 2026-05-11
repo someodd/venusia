@@ -8,6 +8,12 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.9.0.1 - 2026-05-11
+
+### Fixed
+
+* **.deb pre-install no longer re-asserts ownership/mode on an existing `/var/gopher`.** Previous releases ran `install -d -o venusia -g venusia -m 0770 /var/gopher` unconditionally, which on upgrade silently flipped a manually-created `tilde:tilde 0755` directory to `venusia:venusia 0770` — breaking SFTP / non-deb access patterns admins had set up. The pre-install now only creates `/var/gopher` (with the daemon-friendly ownership/mode) when the directory doesn't already exist. If the admin pre-created `/var/gopher` with their own layout, the .deb leaves it alone.
+
 ## 0.9.0.0 - 2026-05-11
 
 ### Security

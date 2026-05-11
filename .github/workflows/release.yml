@@ -99,7 +99,15 @@ jobs:
         set -e
         if ! getent group venusia >/dev/null; then groupadd --system venusia; fi
         if ! id -u venusia >/dev/null 2>&1; then useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin -g venusia venusia; fi
-        install -d -o venusia -g venusia -m 0770 /var/gopher
+        # Only create /var/gopher with our preferred ownership/mode when
+        # it doesn't already exist. `install -d` on an existing directory
+        # would re-assert ownership and mode (e.g. flip a manually-created
+        # tilde:tilde 0755 dir to venusia:venusia 0770), which can quietly
+        # break SFTP / non-deb access patterns on upgrade. If the admin
+        # pre-created the directory with their own layout, leave it alone.
+        if [ ! -d /var/gopher ]; then
+          install -d -o venusia -g venusia -m 0770 /var/gopher
+        fi
         EOF
         chmod +x ./pre-install.sh
         cat <<'EOF' > ./post-install.sh
