@@ -84,6 +84,10 @@ tests = testGroup "integration"
                                                              test_directoryTraversalGuard
   , testCase "listing at the served root produces leading-slash selectors, no ./ artifact"
                                                              test_listingSelectorAtServedRoot
+  , testCase "listing at a non-empty block's root links to the gopher-level parent"
+                                                             test_listingParentLinkAtBlockRoot
+  , testCase "listing at the catch-all root has no parent link"
+                                                             test_listingNoParentAtCatchallRoot
   , testCase "listing hides dotfiles by default (.giosaveXXX, .git, .gophermap)"
                                                              test_listingHidesDotfiles
   , testCase "direct request for a dotfile path is refused when allowDotfiles=False"
@@ -577,6 +581,49 @@ test_listingSelectorAtServedRoot =
                  (not (BS.isInfixOf "/./catalog" resp))
       assertBool "no bare 'catalog' selector (must have leading /)"
                  (not (BS.isInfixOf "\tcatalog\t" resp))
+
+-- | At the root of a non-empty-selector block, the listing must
+-- offer a "Parent directory (..)" link pointing up in the gopher
+-- namespace — without it, a user who navigates into /applets has no
+-- way back to / via the auto-generated UI. Older builds suppressed
+-- the parent row at every block root, leaving dead ends.
+test_listingParentLinkAtBlockRoot :: Assertion
+test_listingParentLinkAtBlockRoot =
+  withSystemTempDirectory "venusia-listing-parent" $ \dir -> do
+    writeFile (dir </> "x.txt") "hi\n"
+    let routes =
+          [ onWildcard "/applets" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectory "127.0.0.1" 7070 dir "/applets" wp Nothing
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/applets\r\n"
+      assertBool "block-root listing includes a parent-directory row"
+                 (BS.isInfixOf "Parent directory" resp)
+      assertBool "parent points one level up in the gopher namespace (\"/\")"
+                 (BS.isInfixOf "\t/\t" resp)
+
+-- | At the catch-all root ("" selector) there isn't anywhere to go
+-- up to — Venusia is the whole namespace from here — so the parent
+-- row is correctly omitted. Guards against the previous fix being
+-- over-broad.
+test_listingNoParentAtCatchallRoot :: Assertion
+test_listingNoParentAtCatchallRoot =
+  withSystemTempDirectory "venusia-listing-noparent" $ \dir -> do
+    writeFile (dir </> "x.txt") "hi\n"
+    let routes =
+          [ onWildcard "" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectory "127.0.0.1" 7070 dir "" wp Nothing
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/\r\n"
+      assertBool "catch-all root has no parent-directory row"
+                 (not (BS.isInfixOf "Parent directory" resp))
 
 -- | Auto-generated listings hide Unix-style dotfiles. Otherwise
 -- gvfs/SFTP temp turds (.giosaveXXXXX), VCS metadata (.git*), and

@@ -183,27 +183,43 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
     fileInfos <- mapM (getFileInfo requestedPath) files
 
     let sortCriteria = fromMaybe ByName sortBy
-        sortedFiles = sortFileInfo sortCriteria fileInfos
+        sortedFiles  = sortFileInfo sortCriteria fileInfos
         relativePath = makeRelative serveRoot requestedPath
-        parentSelector = buildEntrySelector selectorPrefix (takeDirectory relativePath) ""
-        readmePath = requestedPath </> "README.txt"
+        -- 'Parent directory' link target. Two cases: (1) inside a
+        -- served subdirectory the parent is one level up within the
+        -- block; (2) at the block's root the parent is one level up
+        -- in the broader gopher namespace (so /applets links back
+        -- to /, and /applets/foo links back to /applets). Only
+        -- returns 'Nothing' at the catch-all root (empty selector,
+        -- relativePath == "."), where there isn't any parent to go to.
+        parentLink   = parentLinkFor selectorPrefix relativePath
+        readmePath   = requestedPath </> "README.txt"
 
-    putStrLn $ "Listing directory: " ++ T.unpack parentSelector
+    putStrLn $ "Listing directory: " ++ requestedPath
 
     -- Check if README.txt exists and read it. When it does, we also
-    -- record its on-disk size so the preview header can label the
-    -- link with a human-readable byte count, and we filter the file
+    -- record its size and modification time so the preview header can
+    -- label the link with the same shape the regular listing uses
+    -- (size in human bytes, date as YYYY-MM-DD). The file is filtered
     -- out of the regular listing below so it isn't shown twice.
     readmeExists <- doesFileExist readmePath
-    readmeContents <- if readmeExists
-                      then T.lines <$> T.readFile readmePath
-                      else return []
-    readmeSize <- if readmeExists then getFileSize readmePath else pure 0
+    (readmeContents, readmeSize, readmeMTime) <-
+      if readmeExists
+        then do
+          content <- T.lines <$> T.readFile readmePath
+          size    <- getFileSize readmePath
+          mtime   <- getModificationTime readmePath
+          pure (content, size, Just mtime)
+        else pure ([], 0, Nothing)
 
     -- Convert README contents to info items
-    let readmeItems     = map info readmeContents
-        readmeSizeText  = T.pack (formatFileSize readmeSize)
-        readmeLabel     = "README.txt (" <> readmeSizeText <> "):"
+    let readmeItems    = map info readmeContents
+        readmeSizeText = T.pack (formatFileSize readmeSize)
+        readmeDateText = maybe T.empty
+                               (T.pack . formatTime defaultTimeLocale "%Y-%m-%d")
+                               readmeMTime
+        readmeLabel    = "README.txt (" <> readmeSizeText
+                                        <> ", " <> readmeDateText <> "):"
 
     -- When the README is rendered as a preview, exclude it from the
     -- regular file listing — it's already visible above. Filter case-
@@ -237,7 +253,9 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
     -- Compile the final menu, including README.txt contents if it exists
     return . render $
       info ("Directory listing for: " <> T.pack displayPath) :
-      (if relativePath == "." then mempty else directory "Parent directory (..)" parentSelector hostname port) :
+      (case parentLink of
+         Just sel -> directory "Parent directory (..)" sel hostname port
+         Nothing  -> mempty) :
       info "" :
       (if null readmeContents then mempty else text readmeLabel (buildEntrySelector selectorPrefix relativePath "README.txt") hostname port : readmeItems ++ [info ""]) ++
       gopherItems
@@ -248,6 +266,35 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
 isDotFile :: FilePath -> Bool
 isDotFile ('.' : _) = True
 isDotFile _         = False
+
+-- | Compute the gopher selector for the "Parent directory (..)"
+-- link in an auto-generated listing, or 'Nothing' if there isn't one.
+--
+-- * In a subdirectory of a served tree, the parent is one level up
+--   inside the block (uses 'buildEntrySelector' on
+--   @takeDirectory relativePath@).
+-- * At the block's root (@relativePath == "."@) with a non-empty
+--   selector, the parent is one level up in the gopher namespace
+--   relative to the block's configured selector — so a block mounted
+--   at @/applets@ links back to @/@, and one mounted at
+--   @/foo/bar@ links back to @/foo@. Earlier versions omitted the
+--   parent link entirely at block root, which left users with no
+--   way to navigate back to the broader tree.
+-- * At the catch-all root (empty selector, relativePath @"."@) there
+--   is no parent — returns 'Nothing' so the listing omits the row.
+parentLinkFor :: T.Text -> FilePath -> Maybe T.Text
+parentLinkFor selectorPrefix relativePath = case relativePath of
+  "." ->
+    let prefixStr  = T.unpack selectorPrefix
+        normalized = dropWhileEnd (== '/') prefixStr
+    in if null normalized
+         then Nothing
+         else case takeDirectory normalized of
+                "/" -> Just "/"
+                ""  -> Nothing
+                dir -> Just (T.pack dir)
+  rel ->
+    Just (buildEntrySelector selectorPrefix (takeDirectory rel) "")
 
 -- | Build a gopher selector for an entry in an auto-generated
 -- directory listing.

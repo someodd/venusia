@@ -8,6 +8,16 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.10.0.1 - 2026-05-11
+
+### Fixed
+
+* **Parent-directory link present at every block root with a non-empty selector.** Previously the auto-generated listing suppressed the "Parent directory (..)" row whenever `makeRelative` returned `"."` — i.e. at the root of every `[[files]]` block — which left users with no in-UI path back to the broader gopher tree from places like `/applets`. The row is now emitted at block root pointing one level up in the gopher namespace (so `/applets` → `/`, `/foo/bar` → `/foo`); only the catch-all root (empty selector + relativePath `"."`) correctly omits it.
+
+### Changed
+
+* **`README.txt` preview label includes the modification date** alongside the size, matching the columns used in the rest of the listing. Format: `README.txt (1.0KB, 2026-05-24):`.
+
 ## 0.10.0.0 - 2026-05-11
 
 ### Added
