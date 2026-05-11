@@ -8,6 +8,28 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.10.0.0 - 2026-05-11
+
+### Added
+
+* **`$remote_ip` substitution token for `[[files.script_extension]]`.** Scripts can now opt into receiving the connecting client's IP address as text (IPv4 dotted-quad or IPv6 colon form) by including `$remote_ip` in the `arguments` template — useful for per-IP rate limiting, ban lists, audit logging, and other policy decisions that need to know who's calling. The value is the empty string when the peer can't be looked up (e.g. unix-socket connections, `getPeerName` failures). The accept loop captures the address once via `getNameInfo` with `NI_NUMERICHOST` and stamps it onto every `Request`; route matchers don't see it. Privacy note: Venusia just plumbs the value through, the script decides what to do with it.
+
+### Changed
+
+* **`Request` record gains `reqClientIp :: T.Text`.** Breaking for direct library users who pattern-match positionally or construct `Request` values. Route matchers (`on` / `onWildcard`) set this to `""` at match time; `dispatch` stamps the real address in before invoking the handler.
+
+* **`mkScriptHook` now takes a client-IP argument** (fifth positional, before the file path) and `substituteScriptArg` gains a sixth argument for the same. Breaking for direct library users; the only documented caller is `createFileHandler`, which has been updated.
+
+* **`dispatch` signature changed** to take the client IP as a fourth argument (before the request line text). Routes' `runOnSocket` integration handles this internally; only direct callers of `dispatch` need to update.
+
+### Fixed
+
+* **`"Directory listing for: ."` now shows the block's selector.** At the root of a `[[files]]` block, `makeRelative` returns `.` (the requested path equals the served root), and the listing header used to display that literal dot. Now shows the block's configured `selector` (e.g. `"Directory listing for: /applets"`), or `"/"` for the catch-all empty-selector block.
+
+* **`README.txt` is no longer listed twice in auto-generated directory listings.** When `README.txt` is present, its content is rendered as a preview at the top of the listing; previously it also appeared in the regular file table below. Filtered out of the file table when it's the preview source.
+
+* **`README.txt` preview label includes the file's size.** Was `"README.txt:"`; now `"README.txt (4.2KB):"` using the existing `formatFileSize` helper.
+
 ## 0.9.0.1 - 2026-05-11
 
 ### Fixed

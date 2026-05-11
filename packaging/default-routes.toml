@@ -43,6 +43,11 @@ as_info_lines = true
 #              script was addressed directly. Lets one script back a
 #              virtual sub-tree of pages without one [[files]] block
 #              per page. (Added in Venusia 0.8.0.0.)
+#   $remote_ip the connecting client's IP address (IPv4 dotted-quad
+#              or IPv6 colon form); "" when the peer can't be looked
+#              up. For rate limiting, per-IP rules, audit logging.
+#              (Added in Venusia 0.10.0.0.) Privacy note: the script
+#              decides what to do with it — Venusia just plumbs it.
 #
 # The .sh runner below works on a vanilla install. To add literate
 # Haskell auto-execution, install GHC (e.g. via ghcup), then uncomment
@@ -75,7 +80,7 @@ path     = "/var/gopher"
   [[files.script_extension]]
   extension     = "sh"
   command       = "/bin/sh"
-  arguments     = ["$file", "$selector", "$search", "$pathinfo"]
+  arguments     = ["$file", "$selector", "$search", "$pathinfo", "$remote_ip"]
   stream        = false
   as_info_lines = false
 

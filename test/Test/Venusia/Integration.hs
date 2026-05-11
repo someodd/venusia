@@ -102,6 +102,8 @@ tests = testGroup "integration"
                                                              test_scriptExtensionSearchSubstitution
   , testCase "script_extension $selector is substituted from the request selector"
                                                              test_scriptExtensionSelectorSubstitution
+  , testCase "script_extension $remote_ip is substituted from the peer address"
+                                                             test_scriptExtensionRemoteIpSubstitution
   , testCase "script_extension unrecognized tokens pass through verbatim"
                                                              test_scriptExtensionTokenPassthrough
   , testCase "$pathinfo carries the path-info suffix to the script"
@@ -367,7 +369,7 @@ test_scriptHookExecutesFile =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing ""
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing "" ""
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -398,7 +400,7 @@ test_scriptHookFallsThrough =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing ""
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing "" ""
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -429,7 +431,7 @@ test_scriptStreamingExecution =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing ""
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing "" ""
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -825,7 +827,7 @@ test_scriptExtensionSearchSubstitution =
           [ onWildcard "/files/*" $ \req ->
               -- Mirror the per-request hook construction that
               -- 'createFileHandler' performs in production.
-              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery ""
+              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery "" req.reqClientIp
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
@@ -860,7 +862,7 @@ test_scriptExtensionSelectorSubstitution =
           [ onWildcard "/files/*" $ \req ->
               -- Mirror createFileHandler: build the hook per-request so
               -- it captures req.reqSelector.
-              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery ""
+              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery "" req.reqClientIp
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
@@ -871,6 +873,39 @@ test_scriptExtensionSelectorSubstitution =
       resp <- gopherRoundtrip port "/files/marker.sh\r\n"
       assertBool "$selector substituted with the request's selector"
                  (BS.isInfixOf "selector-was: /files/marker.sh" resp)
+
+-- | $remote_ip carries the peer address (text form) through to the
+-- script. The test server binds to 127.0.0.1, so the substitution
+-- result is the loopback literal. Empty when the peer can't be looked
+-- up — but the local connection here is fine, so we assert presence.
+test_scriptExtensionRemoteIpSubstitution :: Assertion
+test_scriptExtensionRemoteIpSubstitution =
+  withSystemTempDirectory "venusia-subst-remoteip" $ \dir -> do
+    let filePath = dir </> "marker.sh"
+    writeFile filePath ""
+    let scriptExts =
+          [ ScriptExtensionConfig
+              { extension   = "sh"
+              , command     = "/bin/echo"
+              , arguments   = ["remote-ip:", "$remote_ip"]
+              , stream      = Nothing
+              , asInfoLines = Nothing
+              }
+          ]
+        itemTypeFn = resolveItemType [] scriptExts
+        routes =
+          [ onWildcard "/files/*" $ \req ->
+              let hook = mkScriptHook scriptExts req.reqSelector req.reqQuery "" req.reqClientIp
+              in case req.reqWildcard of
+                   Just wp ->
+                     serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
+                       Nothing hook itemTypeFn False ".gophermap"
+                   Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/files/marker.sh\r\n"
+      assertBool "$remote_ip substituted with the loopback peer"
+                 (BS.isInfixOf "remote-ip: 127.0.0.1" resp)
 
 -- | Negative: a token /not/ part of the documented substitution surface
 -- (currently $file, $selector, $search, $pathinfo) is passed through
@@ -890,7 +925,7 @@ test_scriptExtensionTokenPassthrough =
               , asInfoLines = Nothing
               }
           ]
-        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing ""
+        hook       = mkScriptHook scriptExts "/files/marker.sh" Nothing "" ""
         itemTypeFn = resolveItemType [] scriptExts
         routes =
           [ onWildcard "/files/*" $ \req ->
@@ -934,7 +969,7 @@ test_scriptExtensionPathInfo =
                 Just wp -> do
                   (sw, pInfo) <- splitForPathInfo dir scriptExts wp
                   let hook = mkScriptHook scriptExts req.reqSelector
-                                          req.reqQuery pInfo
+                                          req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
                     Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
@@ -969,7 +1004,7 @@ test_scriptExtensionPathInfoEmpty =
                 Just wp -> do
                   (sw, pInfo) <- splitForPathInfo dir scriptExts wp
                   let hook = mkScriptHook scriptExts req.reqSelector
-                                          req.reqQuery pInfo
+                                          req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
                     Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
@@ -1006,7 +1041,7 @@ test_scriptExtensionPathInfoTrailingSlash =
                 Just wp -> do
                   (sw, pInfo) <- splitForPathInfo dir scriptExts wp
                   let hook = mkScriptHook scriptExts req.reqSelector
-                                          req.reqQuery pInfo
+                                          req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
                     Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
@@ -1042,7 +1077,7 @@ test_scriptExtensionPathInfoNoFile =
                 Just wp -> do
                   (sw, pInfo) <- splitForPathInfo dir scriptExts wp
                   let hook = mkScriptHook scriptExts req.reqSelector
-                                          req.reqQuery pInfo
+                                          req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
                     Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
@@ -1076,7 +1111,7 @@ test_scriptExtensionPathInfoSearchCoexists =
                 Just wp -> do
                   (sw, pInfo) <- splitForPathInfo dir scriptExts wp
                   let hook = mkScriptHook scriptExts req.reqSelector
-                                          req.reqQuery pInfo
+                                          req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
                     Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
@@ -1118,7 +1153,7 @@ test_scriptExtensionPathInfoTraversalGuard =
                 Just wp -> do
                   (sw, pInfo) <- splitForPathInfo servedRoot scriptExts wp
                   let hook = mkScriptHook scriptExts req.reqSelector
-                                          req.reqQuery pInfo
+                                          req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 servedRoot "/files/" sw
                     Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")

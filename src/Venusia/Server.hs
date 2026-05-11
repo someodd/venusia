@@ -38,6 +38,7 @@ import Control.Exception
   , finally
   , fromException
   , throwIO
+  , try
   )
 import Control.Monad (forever, unless)
 import qualified Data.Text.Encoding as TE
@@ -100,6 +101,12 @@ data Request = Request
   -- ^ Captured wildcard content (if any)
   , reqQuery    :: Maybe T.Text
   -- ^ The query part (after tab, if any)
+  , reqClientIp :: T.Text
+  -- ^ Peer's IP address as text (IPv4 dotted-quad or IPv6 colon
+  -- form, depending on connection family); the empty string when
+  -- the address can't be determined (e.g. a unix-socket peer or a
+  -- 'getPeerName' failure). Populated by the accept loop before
+  -- handler dispatch; not set by 'on' / 'onWildcard' themselves.
   } deriving (Show, Eq)
 
 -- | A response that the server will write back to the client.
@@ -177,7 +184,7 @@ on path handler = Route matcher handler
     matcher raw =
       let (sel, q) = parseRequest raw
       in if sel == path
-         then Just $ Request sel Nothing q
+         then Just $ Request sel Nothing q T.empty
          else Nothing
 
 -- | Create a route with wildcard path matching.
@@ -219,22 +226,28 @@ onWildcard pattern handler = Route matcher handler
              { reqSelector = sel             -- as-received
              , reqWildcard = Just wildcardPart
              , reqQuery    = q
+             , reqClientIp = T.empty         -- filled in by dispatch
              }
            Nothing -> Nothing
 
--- | Dispatch a request to the first matching route
-dispatch :: Handler -> [Route] -> T.Text -> IO Response
-dispatch noMatch routes req = go routes
+-- | Dispatch a request to the first matching route, stamping the
+-- supplied client IP onto the resulting 'Request' before the handler
+-- runs. Route matchers ('on' / 'onWildcard') construct 'Request'
+-- values with @reqClientIp = ""@ since they have no access to the
+-- connection; dispatch is the choke point that knows the peer.
+dispatch :: Handler -> [Route] -> T.Text -> T.Text -> IO Response
+dispatch noMatch routes clientIp req = go routes
   where
+    setIp r = r { reqClientIp = clientIp }
     go [] =
       -- No matching route found, call the noMatch handler
       -- to present an error message (generally).
       let (sel, q) = parseRequest req
-      in noMatch $ Request sel Nothing q
+      in noMatch (setIp (Request sel Nothing q T.empty))
     go (Route match handle : rs) =
       case match req of
-        Just request -> handle request
-        Nothing -> go rs
+        Just request -> handle (setIp request)
+        Nothing      -> go rs
 
 {- | A simple default handler for the error case of
 no matching route for the provided selector.
@@ -343,11 +356,28 @@ handleConnHotReload noMatch routesMVar sock =
   (body `catch` logHandlerException) `finally` close sock
   where
     body = do
+      clientIp <- peerIpText sock
       mreq <- timeout readTimeoutMicros (NBS.recv sock 1024)
       case mreq of
         Nothing  -> return ()  -- slowloris / silent client
         Just raw -> do
           let trimmedReq = sanitizeSelector raw
           currentRoutes <- readMVar routesMVar
-          response <- dispatch noMatch currentRoutes (TE.decodeUtf8 trimmedReq)
+          response <- dispatch noMatch currentRoutes clientIp (TE.decodeUtf8 trimmedReq)
           sendResponse sock response
+
+-- | Return the peer's IP as text (IPv4 dotted-quad or IPv6 colon
+-- form), or the empty string when the peer can't be looked up.
+-- Wraps 'getPeerName' + 'getNameInfo' with 'NI_NUMERICHOST' so the
+-- result is always the literal address, never a DNS reverse-lookup.
+-- All exceptions are swallowed and surfaced as @""@ — the goal is
+-- "best-effort metadata for scripts", not a hard guarantee.
+peerIpText :: Socket -> IO T.Text
+peerIpText sock = do
+  result <- try $ do
+    sa <- getPeerName sock
+    (mhost, _) <- getNameInfo [NI_NUMERICHOST] True False sa
+    pure (maybe T.empty T.pack mhost)
+  case (result :: Either SomeException T.Text) of
+    Left _  -> pure T.empty
+    Right t -> pure t

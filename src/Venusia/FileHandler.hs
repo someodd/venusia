@@ -21,6 +21,7 @@ import System.Directory
   , doesFileExist
   , doesDirectoryExist
   , canonicalizePath
+  , getFileSize
   , getModificationTime
   , pathIsSymbolicLink
   )
@@ -189,14 +190,39 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
 
     putStrLn $ "Listing directory: " ++ T.unpack parentSelector
 
-    -- Check if README.txt exists and read it
+    -- Check if README.txt exists and read it. When it does, we also
+    -- record its on-disk size so the preview header can label the
+    -- link with a human-readable byte count, and we filter the file
+    -- out of the regular listing below so it isn't shown twice.
     readmeExists <- doesFileExist readmePath
     readmeContents <- if readmeExists
                       then T.lines <$> T.readFile readmePath
                       else return []
+    readmeSize <- if readmeExists then getFileSize readmePath else pure 0
 
     -- Convert README contents to info items
-    let readmeItems = map info readmeContents
+    let readmeItems     = map info readmeContents
+        readmeSizeText  = T.pack (formatFileSize readmeSize)
+        readmeLabel     = "README.txt (" <> readmeSizeText <> "):"
+
+    -- When the README is rendered as a preview, exclude it from the
+    -- regular file listing — it's already visible above. Filter case-
+    -- sensitively on "README.txt" (the only name the preview path
+    -- recognises) so other similarly-named files aren't dropped.
+    let isReadme fi    = fi.fiName == "README.txt"
+        listingFiles   = if readmeExists
+                           then filter (not . isReadme) sortedFiles
+                           else sortedFiles
+
+    -- "Directory listing for: ." reads as nonsense to a human at the
+    -- root of a [[files]] block. Show the block's configured selector
+    -- (or "/" for the catch-all "" block) instead, while keeping the
+    -- relative-path display correct in subdirectories.
+    let displayPath = case relativePath of
+                        "." -> if T.null selectorPrefix
+                                 then "/"
+                                 else T.unpack selectorPrefix
+                        p   -> p
 
     gopherItems <-
         mapM (\fi -> do
@@ -206,14 +232,14 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
               itemType = if fi.fiIsDir then '1' else itemTypeFor filename
               infoText = formatFileInfoTable fi
             return $ item itemType infoText selector hostname port
-            ) sortedFiles
+            ) listingFiles
 
     -- Compile the final menu, including README.txt contents if it exists
     return . render $
-      info ("Directory listing for: " <> T.pack relativePath) :
+      info ("Directory listing for: " <> T.pack displayPath) :
       (if relativePath == "." then mempty else directory "Parent directory (..)" parentSelector hostname port) :
       info "" :
-      (if null readmeContents then mempty else text "README.txt:" (buildEntrySelector selectorPrefix relativePath "README.txt") hostname port : readmeItems ++ [info ""]) ++
+      (if null readmeContents then mempty else text readmeLabel (buildEntrySelector selectorPrefix relativePath "README.txt") hostname port : readmeItems ++ [info ""]) ++
       gopherItems
 
 -- | Predicate: filename starts with @.@ — i.e. a Unix-style dotfile.

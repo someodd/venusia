@@ -319,6 +319,7 @@ createFileHandler config globalFileTypes host port request =
             splitForPathInfo config.path scriptExts wildcard
           let fileHook = mkScriptHook scriptExts request.reqSelector
                                       request.reqQuery pathInfo
+                                      request.reqClientIp
           serveDirectoryWith host port config.path config.selector scriptWildcard
             Nothing fileHook itemTypeFn allowDots idxFile
     Nothing       -> pure $ TextResponse "Error: No path provided for file handler."
@@ -392,23 +393,25 @@ splitForPathInfo root scriptExts wildcard = do
 -- The hook captures the gopher selector that resolved to this script (for
 -- @$selector@ substitution so the script can generate menu items linking
 -- back to itself without hardcoding its own path), the request's @$search@
--- query (so type-7-style invocations see the user's input), and the
+-- query (so type-7-style invocations see the user's input), the
 -- @$pathinfo@ string carved out of the wildcard by 'splitForPathInfo'
 -- (empty when the request did not address a virtual sub-path under the
--- script).
+-- script), and the client's @$remote_ip@ (empty when the peer couldn't be
+-- determined).
 mkScriptHook
   :: [ScriptExtensionConfig]
   -> T.Text                   -- ^ request selector (for @$selector@ substitution)
   -> Maybe T.Text             -- ^ optional search query (for @$search@)
   -> T.Text                   -- ^ path-info suffix (for @$pathinfo@); @\"\"@ when none
+  -> T.Text                   -- ^ client IP (for @$remote_ip@); @\"\"@ when unknown
   -> FilePath
   -> IO (Maybe Response)
-mkScriptHook specs reqSelector mQuery pathInfo filePath =
+mkScriptHook specs reqSelector mQuery pathInfo clientIp filePath =
   case lookupExt (extKey filePath) specs of
     Nothing   -> pure Nothing
     Just spec -> do
       let processedArgs =
-            map (T.unpack . substituteScriptArg (T.pack filePath) reqSelector mQuery pathInfo)
+            map (T.unpack . substituteScriptArg (T.pack filePath) reqSelector mQuery pathInfo clientIp)
                 spec.arguments
       Just <$> runProcess
                  (fromMaybe False spec.stream)
@@ -481,12 +484,18 @@ singleChar t = case T.uncons t of
 --   (e.g. @\/Page\/SubPage@ for selector @\/cgi\/wiki.lhs\/Page\/SubPage@),
 --   with a leading slash. Empty when the request addressed the script
 --   directly. Modeled on CGI's @PATH_INFO@.
-substituteScriptArg :: T.Text -> T.Text -> Maybe T.Text -> T.Text -> T.Text -> T.Text
-substituteScriptArg filePath reqSelector mQuery pathInfo =
-    T.replace "$file"     filePath
-      . T.replace "$selector" reqSelector
-      . T.replace "$search"   (fromMaybe "" mQuery)
-      . T.replace "$pathinfo" pathInfo
+-- * @$remote_ip@ — the connecting client's IP address as text (IPv4
+--   dotted-quad or IPv6 colon form). Empty when the peer can't be
+--   looked up. Useful for rate limiting, per-IP rule application, or
+--   audit logging — whatever the script wants to do with it is the
+--   script's call; this just plumbs the value through.
+substituteScriptArg :: T.Text -> T.Text -> Maybe T.Text -> T.Text -> T.Text -> T.Text -> T.Text
+substituteScriptArg filePath reqSelector mQuery pathInfo clientIp =
+    T.replace "$file"      filePath
+      . T.replace "$selector"  reqSelector
+      . T.replace "$search"    (fromMaybe "" mQuery)
+      . T.replace "$pathinfo"  pathInfo
+      . T.replace "$remote_ip" clientIp
 
 -- | Creates a handler for a command gateway configuration.
 createCommandHandler :: GatewayConfig -> Handler
