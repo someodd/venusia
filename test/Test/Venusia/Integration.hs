@@ -20,7 +20,7 @@ import System.FilePath ((</>))
 import System.IO (hClose)
 import System.IO.Temp (withSystemTempFile, withSystemTempDirectory)
 
-import Venusia.FileHandler (serveDirectory, serveDirectoryWith)
+import Venusia.FileHandler (fileExtensionToItemType, serveDirectory, serveDirectoryWith)
 import Venusia.Server
   ( Route(..)
   , Request(..)
@@ -82,6 +82,18 @@ tests = testGroup "integration"
                                                              test_resolveItemTypeCaseInsensitive
   , testCase "directory traversal is blocked when sibling shares a string prefix"
                                                              test_directoryTraversalGuard
+  , testCase "listing at the served root produces leading-slash selectors, no ./ artifact"
+                                                             test_listingSelectorAtServedRoot
+  , testCase "listing hides dotfiles by default (.giosaveXXX, .git, .gophermap)"
+                                                             test_listingHidesDotfiles
+  , testCase "direct request for a dotfile path is refused when allowDotfiles=False"
+                                                             test_directDotfileRequestRefused
+  , testCase "direct request for the configured indexFile (e.g. .gophermap) is allowed"
+                                                             test_directIndexFileRequestAllowed
+  , testCase "request traversing a non-final dotfile component (.git/config) is refused"
+                                                             test_intermediateDotfileRefused
+  , testCase "dotfiles are listed AND served when allowDotfiles=True"
+                                                             test_listingShowsDotfilesWhenOptedIn
   , testCase "preamble/postamble lines auto-terminated with CRLF in info-wrap mode"
                                                              test_preamblePostambleCRLF
   , testCase "streaming child process is killed when client disconnects mid-stream"
@@ -362,7 +374,7 @@ test_scriptHookExecutesFile =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp Nothing
-                    hook itemTypeFn
+                    hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -393,7 +405,7 @@ test_scriptHookFallsThrough =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp Nothing
-                    hook itemTypeFn
+                    hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -424,7 +436,7 @@ test_scriptStreamingExecution =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp Nothing
-                    hook itemTypeFn
+                    hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -537,6 +549,160 @@ test_directoryTraversalGuard =
       assertBool "traversal denied" (BS.isInfixOf "Access denied" bad)
       assertBool "secret content not present in response"
                  (not (BS.isInfixOf "leaked" bad))
+
+-- | At the served root, 'makeRelative' returns @\".\"@ for the
+-- requested path, which the older selector-building code passed
+-- straight to '(</>)', producing wires like @\".\/catalog\"@ in
+-- gophermap rows. Together with the empty @selector = \"\"@
+-- catch-all, that produced bare names without a leading slash too.
+-- Both must round-trip as clean absolute selectors.
+test_listingSelectorAtServedRoot :: Assertion
+test_listingSelectorAtServedRoot =
+  withSystemTempDirectory "venusia-listing-root" $ \dir -> do
+    writeFile (dir </> "catalog") "x\n"
+    let routes =
+          [ onWildcard "" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectory "127.0.0.1" 7070 dir "" wp Nothing
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/\r\n"
+      assertBool "clean /catalog selector in listing"
+                 (BS.isInfixOf "\t/catalog\t" resp)
+      assertBool "no ./catalog artifact"
+                 (not (BS.isInfixOf "/./catalog" resp))
+      assertBool "no bare 'catalog' selector (must have leading /)"
+                 (not (BS.isInfixOf "\tcatalog\t" resp))
+
+-- | Auto-generated listings hide Unix-style dotfiles. Otherwise
+-- gvfs/SFTP temp turds (.giosaveXXXXX), VCS metadata (.git*), and
+-- Venusia's own .gophermap leak into menus that clients render.
+-- Files remain reachable by direct selector — they're just not
+-- enumerated in the listing.
+test_listingHidesDotfiles :: Assertion
+test_listingHidesDotfiles =
+  withSystemTempDirectory "venusia-listing-dotfiles" $ \dir -> do
+    writeFile (dir </> "real.txt")        "visible\n"
+    writeFile (dir </> ".giosave1234")    "internal\n"
+    writeFile (dir </> ".gophermap-old")  "internal\n"
+    let routes =
+          [ onWildcard "" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectory "127.0.0.1" 7070 dir "" wp Nothing
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/\r\n"
+      assertBool "visible file is enumerated"
+                 (BS.isInfixOf "real.txt" resp)
+      assertBool ".giosave1234 is hidden"
+                 (not (BS.isInfixOf ".giosave1234" resp))
+      assertBool ".gophermap-old is hidden"
+                 (not (BS.isInfixOf ".gophermap-old" resp))
+
+-- | Defence-in-depth: an attacker who guesses /foo/.env must not be
+-- served the file even though it's not in any listing. The refusal
+-- happens before file resolution, so the dotfile's content can't leak
+-- via the response body or via timing differences against a non-
+-- existent path.
+test_directDotfileRequestRefused :: Assertion
+test_directDotfileRequestRefused =
+  withSystemTempDirectory "venusia-direct-dotfile" $ \dir -> do
+    writeFile (dir </> ".env") "SECRET=correct-horse-battery-staple\n"
+    let routes =
+          [ onWildcard "" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectory "127.0.0.1" 7070 dir "" wp Nothing
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/.env\r\n"
+      assertBool "direct dotfile request refused"
+                 (BS.isInfixOf "Access denied" resp)
+      assertBool "dotfile content does NOT appear in the response"
+                 (not (BS.isInfixOf "correct-horse-battery-staple" resp))
+
+-- | The configured directory-menu index file (default @.gophermap@) is
+-- the one dotfile name the framework treats as content by convention,
+-- and a direct request for it must succeed even with the default
+-- @allowDotfiles=False@. The narrow exemption is final-component-only:
+-- @/foo/.gophermap@ is allowed; @/foo/.env@ is still refused (covered
+-- by 'test_directDotfileRequestRefused').
+test_directIndexFileRequestAllowed :: Assertion
+test_directIndexFileRequestAllowed =
+  withSystemTempDirectory "venusia-direct-indexfile" $ \dir -> do
+    writeFile (dir </> ".gophermap") "iindex-file-marker\t\t\t0\r\n.\r\n"
+    let routes =
+          [ onWildcard "" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectory "127.0.0.1" 7070 dir "" wp Nothing
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/.gophermap\r\n"
+      assertBool "direct .gophermap request returns the file (not refused)"
+                 (BS.isInfixOf "index-file-marker" resp)
+      assertBool "no access-denied for the index file"
+                 (not (BS.isInfixOf "Access denied" resp))
+
+-- | The index-file exemption is narrow: only the FINAL path component
+-- gets the pass. A request like @/foo/.git/config@ — where @.git@ is
+-- an intermediate dotfile component (a VCS directory) and @config@
+-- is its inner config file — must still be refused. Browsing /through/
+-- a dotfile leaks structure that's almost always sensitive.
+test_intermediateDotfileRefused :: Assertion
+test_intermediateDotfileRefused =
+  withSystemTempDirectory "venusia-intermediate-dotfile" $ \dir -> do
+    createDirectoryIfMissing True (dir </> ".git")
+    writeFile (dir </> ".git" </> "config") "[user]\n  email = secret@example.com\n"
+    let routes =
+          [ onWildcard "" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectory "127.0.0.1" 7070 dir "" wp Nothing
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      resp <- gopherRoundtrip port "/.git/config\r\n"
+      assertBool "intermediate-dotfile traversal refused"
+                 (BS.isInfixOf "Access denied" resp)
+      assertBool "VCS config content does NOT appear in the response"
+                 (not (BS.isInfixOf "secret@example.com" resp))
+
+-- | Opt-in: a block with allowDotfiles=True both enumerates and
+-- serves dotfiles. Used by `[[files]]` configs with
+-- @allow_dotfiles = true@ — for the dotfiles-as-content edge case.
+test_listingShowsDotfilesWhenOptedIn :: Assertion
+test_listingShowsDotfilesWhenOptedIn =
+  withSystemTempDirectory "venusia-listing-showdots" $ \dir -> do
+    writeFile (dir </> "real.txt")    "visible\n"
+    writeFile (dir </> ".bashrc")     "dotfile content\n"
+    let hook       = \_ -> pure Nothing
+        itemTypeFn = fileExtensionToItemType
+        routes =
+          [ onWildcard "" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectoryWith "127.0.0.1" 7070 dir "" wp Nothing
+                    hook itemTypeFn True ".gophermap"  -- opted in
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      -- Listing visibility
+      listResp <- gopherRoundtrip port "/\r\n"
+      assertBool "visible file is enumerated"
+                 (BS.isInfixOf "real.txt" listResp)
+      assertBool ".bashrc is also enumerated when allowDotfiles=True"
+                 (BS.isInfixOf ".bashrc" listResp)
+      -- Direct-access servability
+      directResp <- gopherRoundtrip port "/.bashrc\r\n"
+      assertBool "direct dotfile request served when allowDotfiles=True"
+                 (BS.isInfixOf "dotfile content" directResp)
 
 ------------------------------------------------------------------------
 -- Preamble/postamble framing
@@ -663,7 +829,7 @@ test_scriptExtensionSearchSubstitution =
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
-                       Nothing hook itemTypeFn
+                       Nothing hook itemTypeFn False ".gophermap"
                    Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -698,7 +864,7 @@ test_scriptExtensionSelectorSubstitution =
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
-                       Nothing hook itemTypeFn
+                       Nothing hook itemTypeFn False ".gophermap"
                    Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -731,7 +897,7 @@ test_scriptExtensionTokenPassthrough =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
-                    Nothing hook itemTypeFn
+                    Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -770,7 +936,7 @@ test_scriptExtensionPathInfo =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn
+                    Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -805,7 +971,7 @@ test_scriptExtensionPathInfoEmpty =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn
+                    Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -842,7 +1008,7 @@ test_scriptExtensionPathInfoTrailingSlash =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn
+                    Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -878,7 +1044,7 @@ test_scriptExtensionPathInfoNoFile =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn
+                    Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -912,7 +1078,7 @@ test_scriptExtensionPathInfoSearchCoexists =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn
+                    Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -954,7 +1120,7 @@ test_scriptExtensionPathInfoTraversalGuard =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo
                   serveDirectoryWith "127.0.0.1" 7070 servedRoot "/files/" sw
-                    Nothing hook itemTypeFn
+                    Nothing hook itemTypeFn False ".gophermap"
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do

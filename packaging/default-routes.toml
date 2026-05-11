@@ -1,0 +1,100 @@
+# Demo Venusia routes.toml — installed by the .deb on first run at
+# /var/gopher/routes.toml.
+#
+# Edit this file freely; the watcher reloads on save (see
+# /lib/systemd/system/venusia.service). On package upgrades the .deb
+# leaves it alone if it already exists, so your edits survive.
+# Removing this file is also fine — Venusia logs "no routes loaded"
+# and starts up with no routes; static files in this directory will
+# only be reachable once you add a [[files]] catch-all again.
+#
+# Full schema reference: https://github.com/someodd/Venusia#configuration
+
+# ----------------------------------------------------------------------
+# A simple command gateway. /hello echoes back whatever query the
+# client sent. Quick smoke test:
+#
+#   $ printf '/hello\tworld\r\n' | nc 127.0.0.1 7070
+#
+# ----------------------------------------------------------------------
+[[gateway]]
+selector      = "/hello"
+wildcard      = false
+command       = "/bin/echo"
+arguments     = ["Hello, $search!"]
+as_info_lines = true
+
+# ----------------------------------------------------------------------
+# Catch-all file server. Every selector under "" maps to a file under
+# /var/gopher. Drop a .gophermap in there for a custom landing page;
+# otherwise Venusia auto-generates a directory listing.
+#
+# Files matching a [[files.script_extension]] in this block are auto-
+# executed instead of served as source — their stdout becomes the
+# response. Four substitution tokens are expanded into 'arguments'
+# before exec:
+#
+#   $file      canonical absolute path to the script on disk
+#   $selector  gopher selector that resolved to it (lets a script emit
+#              self-links without hardcoding its path)
+#   $search    request's search query after the tab; empty if none
+#   $pathinfo  selector portion AFTER the script's filename. A request
+#              for /wiki.lhs/Page/Sub gives "/Page/Sub"; empty when the
+#              script was addressed directly. Lets one script back a
+#              virtual sub-tree of pages without one [[files]] block
+#              per page. (Added in Venusia 0.8.0.0.)
+#
+# The .sh runner below works on a vanilla install. To add literate
+# Haskell auto-execution, install GHC (e.g. via ghcup), then uncomment
+# the .lhs block and the matching [[files.file_type]]. For production
+# you'll want a caching wrapper that compiles each .lhs once per
+# source-edit instead of per request — see Venusia's README for one.
+# ----------------------------------------------------------------------
+[[files]]
+selector = ""
+path     = "/var/gopher"
+
+  # `allow_dotfiles` defaults to false: dotfile paths (.env, .git,
+  # .htpasswd, SFTP scratch droppings like .giosaveXXXXX) are refused
+  # both in listings and on direct request. Flip to true ONLY for a
+  # block whose served content really is dotfiles.
+  # allow_dotfiles = false
+
+  # `index_file` is the filename Venusia reads to render a directory's
+  # menu, AND the single dotfile name exempt from the refusal above
+  # (because it's the framework's own convention). Default below.
+  # Override to a non-dotfile name (e.g. "index.gph") if you'd rather
+  # not name your menu files with a leading dot.
+  # index_file = ".gophermap"
+
+  # /bin/sh runs each .sh script with the four tokens as positional
+  # args. Inside the script: $1=script-path, $2=selector, $3=search,
+  # $4=pathinfo. Try dropping a hello.sh that does:
+  #   #!/bin/sh
+  #   printf 'iHello from %s\t\t\t0\r\n.\r\n' "$2"
+  [[files.script_extension]]
+  extension     = "sh"
+  command       = "/bin/sh"
+  arguments     = ["$file", "$selector", "$search", "$pathinfo"]
+  stream        = false
+  as_info_lines = false
+
+  # Show .sh files as type 0 (text) in auto-generated directory
+  # listings — they emit gophermap text but the link points to a
+  # menu-styled selector either way; tweak as your scripts dictate.
+  [[files.file_type]]
+  extension = "sh"
+  item_type = "0"
+
+  # Uncomment when GHC + stack are available on the system.
+  #
+  #  [[files.script_extension]]
+  #  extension     = "lhs"
+  #  command       = "runghc"
+  #  arguments     = ["$file", "$selector", "$search", "$pathinfo"]
+  #  stream        = true
+  #  as_info_lines = false
+  #
+  #  [[files.file_type]]
+  #  extension = "lhs"
+  #  item_type = "1"

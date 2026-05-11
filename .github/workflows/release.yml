@@ -65,8 +65,13 @@ jobs:
         # --- (Package creation steps) ---
         mkdir -p pkg/usr/bin
         mkdir -p pkg/lib/systemd/system
+        mkdir -p pkg/usr/share/venusia
         cp ./dist/Venusia-exe pkg/usr/bin/venusia
         chmod +x pkg/usr/bin/venusia
+        # Demo routes.toml shipped at /usr/share/venusia/default-routes.toml.
+        # post-install.sh seeds it into /var/gopher/ on first install only —
+        # existing routes.toml files survive upgrades untouched.
+        cp packaging/default-routes.toml pkg/usr/share/venusia/default-routes.toml
         cat <<'EOF' > pkg/lib/systemd/system/venusia.service
         [Unit]
         Description=Venusia Gopher Server
@@ -76,14 +81,15 @@ jobs:
         User=venusia
         Group=venusia
         # The 'watch' subcommand requires WATCH_DIR HOST PORT as positional args.
-        # Default below binds to loopback on port 7070 (unprivileged). To expose
+        # Default below binds to loopback on port 7070 (unprivileged) and
+        # serves out of /var/gopher (also where routes.toml lives). To expose
         # publicly or change the watch directory, drop a file at
         # /etc/systemd/system/venusia.service.d/override.conf with:
         #   [Service]
         #   ExecStart=
-        #   ExecStart=/usr/bin/venusia watch /var/gopher/source gopher.example.com 70
+        #   ExecStart=/usr/bin/venusia watch /var/gopher gopher.example.com 70
         # Then: systemctl daemon-reload && systemctl restart venusia
-        ExecStart=/usr/bin/venusia watch /var/gopher/source 127.0.0.1 7070
+        ExecStart=/usr/bin/venusia watch /var/gopher 127.0.0.1 7070
         Restart=on-failure
         [Install]
         WantedBy=multi-user.target
@@ -93,13 +99,18 @@ jobs:
         set -e
         if ! getent group venusia >/dev/null; then groupadd --system venusia; fi
         if ! id -u venusia >/dev/null 2>&1; then useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin -g venusia venusia; fi
-        install -d -m 0775 /var/gopher
-        install -d -o venusia -g venusia -m 0770 /var/gopher/source
+        install -d -o venusia -g venusia -m 0770 /var/gopher
         EOF
         chmod +x ./pre-install.sh
         cat <<'EOF' > ./post-install.sh
         #!/bin/sh
         set -e
+        # Seed a demo routes.toml on first install. Don't overwrite on upgrade.
+        if [ ! -e /var/gopher/routes.toml ]; then
+          install -o venusia -g venusia -m 0640 \
+            /usr/share/venusia/default-routes.toml \
+            /var/gopher/routes.toml
+        fi
         systemctl daemon-reload
         systemctl enable venusia.service
         systemctl start venusia.service
@@ -123,7 +134,8 @@ jobs:
           --before-install ./pre-install.sh \
           --after-install ./post-install.sh \
           --before-remove ./pre-uninstall.sh \
-          -C pkg usr/bin/venusia lib/systemd/system/venusia.service
+          -C pkg usr/bin/venusia lib/systemd/system/venusia.service \
+                 usr/share/venusia/default-routes.toml
 
     - name: Release
       uses: softprops/action-gh-release@v1

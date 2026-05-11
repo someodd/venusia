@@ -109,6 +109,28 @@ data FilesConfig = FilesConfig
   , fileTypes        :: [FileTypeConfig]
   -- ^ Per-block item-type overrides (TOML: @[[files.file_type]]@). Win over
   -- top-level @[[file_type]]@ when this block is generating the listing.
+  , allowDotfiles    :: Maybe Bool
+  -- ^ TOML: @allow_dotfiles@. Whether this @[[files]]@ block will
+  -- expose Unix-style dotfiles to clients /at all/ — covers both
+  -- listing visibility and direct-selector access. Defaults to
+  -- 'False' (refuse), so a request for @/foo/.env@ is rejected with
+  -- a type-3 error response even when the client knows the exact
+  -- path. This is defence-in-depth: hiding from the listing alone
+  -- isn't safety, because an attacker who guesses the filename can
+  -- still fetch it. Set to 'True' on a block whose served content
+  -- really is dotfiles.
+  --
+  -- The block's configured 'indexFile' is /always/ exempt — it's
+  -- the framework's directory-menu source, named-by-convention even
+  -- when that convention is a dotfile.
+  , indexFile        :: Maybe FilePath
+  -- ^ TOML: @index_file@. Filename Venusia reads to render a
+  -- directory listing's menu, and the single dotfile name (if it is
+  -- one) exempt from the @allow_dotfiles@ refusal. Defaults to
+  -- @.gophermap@. Change it if your directory-menu files live under
+  -- a non-dotfile or differently-named convention (e.g.
+  -- @index.gph@). Whatever it's set to, that filename is what both
+  -- the auto-rendering and the dotfile-exception apply to.
   } deriving (Show, Eq, Generic)
 
 -- | A file-extension-driven script runner. When a request resolves to a file
@@ -173,6 +195,8 @@ filesConfigCodec = FilesConfig
     <*> Toml.string "path"                                                .= (.path)
     <*> Toml.list scriptExtensionConfigCodec "script_extension"           .= (.scriptExtensions)
     <*> Toml.list fileTypeConfigCodec        "file_type"                  .= (.fileTypes)
+    <*> Toml.dioptional (Toml.bool "allow_dotfiles")                      .= (.allowDotfiles)
+    <*> Toml.dioptional (Toml.string "index_file")                        .= (.indexFile)
 
 -- | Codec for a single script-extension specification.
 scriptExtensionConfigCodec :: TomlCodec ScriptExtensionConfig
@@ -285,16 +309,18 @@ createFileHandler config globalFileTypes host port request =
       -- first script-extension boundary so a request like
       -- @wiki.lhs/Page/SubPage@ runs @wiki.lhs@ with @\/Page\/SubPage@
       -- threaded into @$pathinfo@.
+      let allowDots = fromMaybe False        config.allowDotfiles
+          idxFile   = fromMaybe ".gophermap" config.indexFile
       if null scriptExts
         then serveDirectoryWith host port config.path config.selector wildcard
-               Nothing (\_ -> pure Nothing) itemTypeFn
+               Nothing (\_ -> pure Nothing) itemTypeFn allowDots idxFile
         else do
           (scriptWildcard, pathInfo) <-
             splitForPathInfo config.path scriptExts wildcard
           let fileHook = mkScriptHook scriptExts request.reqSelector
                                       request.reqQuery pathInfo
           serveDirectoryWith host port config.path config.selector scriptWildcard
-            Nothing fileHook itemTypeFn
+            Nothing fileHook itemTypeFn allowDots idxFile
     Nothing       -> pure $ TextResponse "Error: No path provided for file handler."
 
 -- | Detect a path-info boundary in the request wildcard.

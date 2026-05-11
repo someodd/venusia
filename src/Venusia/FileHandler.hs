@@ -26,9 +26,9 @@ import System.Directory
   )
 import Venusia.MenuBuilder (gophermapRender, render, item, error', info, menu, directory, text)
 import Venusia.Server (Request(..), Response(..))
-import System.FilePath ((</>), takeExtension, makeRelative, takeDirectory, splitDirectories)
+import System.FilePath ((</>), takeExtension, takeFileName, makeRelative, takeDirectory, splitDirectories)
 import qualified Data.ByteString as BL
-import Data.List (isPrefixOf, sortBy, partition)
+import Data.List (dropWhileEnd, intercalate, isPrefixOf, sortBy, partition)
 import Data.Time (UTCTime, formatTime, defaultTimeLocale)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Ord (comparing)
@@ -167,15 +167,24 @@ truncateFilename name =
 listDirectoryAsGophermapWith
   :: T.Text -> Int -> FilePath -> T.Text -> FilePath -> Maybe SortBy
   -> (FilePath -> Char)
+  -> Bool
   -> IO T.Text
-listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPath sortBy itemTypeFor = do
-    files <- listDirectory requestedPath
+listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPath sortBy itemTypeFor allowDotfiles = do
+    -- Hide dotfiles from auto-generated listings unless the block has
+    -- opted in. They're typically internal state (.gophermap, .git/,
+    -- .env) or transient SFTP/gvfs droppings (.giosaveXXXXX). The
+    -- corresponding direct-access refusal lives in 'serveDirectoryWith'
+    -- so an attacker who guesses the filename still can't fetch it.
+    rawFiles <- listDirectory requestedPath
+    let files = if allowDotfiles
+                  then rawFiles
+                  else filter (not . isDotFile) rawFiles
     fileInfos <- mapM (getFileInfo requestedPath) files
 
     let sortCriteria = fromMaybe ByName sortBy
         sortedFiles = sortFileInfo sortCriteria fileInfos
         relativePath = makeRelative serveRoot requestedPath
-        parentSelector = T.pack $ T.unpack selectorPrefix <> takeDirectory relativePath <> "/"
+        parentSelector = buildEntrySelector selectorPrefix (takeDirectory relativePath) ""
         readmePath = requestedPath </> "README.txt"
 
     putStrLn $ "Listing directory: " ++ T.unpack parentSelector
@@ -193,7 +202,7 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
         mapM (\fi -> do
             let
               filename = T.unpack fi.fiName
-              selector = T.pack $ T.unpack selectorPrefix </> relativePath </> filename
+              selector = buildEntrySelector selectorPrefix relativePath filename
               itemType = if fi.fiIsDir then '1' else itemTypeFor filename
               infoText = formatFileInfoTable fi
             return $ item itemType infoText selector hostname port
@@ -204,15 +213,49 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
       info ("Directory listing for: " <> T.pack relativePath) :
       (if relativePath == "." then mempty else directory "Parent directory (..)" parentSelector hostname port) :
       info "" :
-      (if null readmeContents then mempty else text "README.txt:" (T.pack $ T.unpack selectorPrefix </> relativePath </> "README.txt") hostname port : readmeItems ++ [info ""]) ++
+      (if null readmeContents then mempty else text "README.txt:" (buildEntrySelector selectorPrefix relativePath "README.txt") hostname port : readmeItems ++ [info ""]) ++
       gopherItems
 
+-- | Predicate: filename starts with @.@ — i.e. a Unix-style dotfile.
+-- Used by 'listDirectoryAsGophermapWith' to filter hidden state out of
+-- auto-generated listings.
+isDotFile :: FilePath -> Bool
+isDotFile ('.' : _) = True
+isDotFile _         = False
+
+-- | Build a gopher selector for an entry in an auto-generated
+-- directory listing.
+--
+-- Combines the mount-point selector prefix, the subdirectory relative
+-- to the served root, and the entry name into a single absolute-style
+-- gopher selector:
+--
+--   * leading slash guaranteed (so the catch-all @selector = \"\"@
+--     case doesn't emit @\"catalog\"@-style bare names);
+--   * the @\".\"@ pseudo-segment that 'makeRelative' returns when
+--     @requestedPath@ equals @serveRoot@ is stripped (so listing the
+--     served root produces @\"\/catalog\"@, not @\"\/.\/catalog\"@);
+--   * trailing slashes on the prefix are dropped before joining so
+--     a configured @selector = \"\/foo\/\"@ doesn't yield
+--     @\"\/foo\/\/bar\"@.
+--
+-- Pass an empty string for the third argument to compute the
+-- selector for the directory itself rather than for an entry within it.
+buildEntrySelector :: T.Text -> FilePath -> FilePath -> T.Text
+buildEntrySelector prefix relPath name =
+  let prefix' = dropWhileEnd (== '/') (T.unpack prefix)
+      parts   = filter (\s -> not (null s) && s /= ".")
+                       [prefix', relPath, name]
+      joined  = intercalate "/" parts
+  in T.pack $ if "/" `isPrefixOf` joined then joined else '/' : joined
+
 -- | Serve a directory listing or file content. Equivalent to
--- @'serveDirectoryWith' … (\\_ -> pure Nothing) 'fileExtensionToItemType'@.
+-- @'serveDirectoryWith' … (\\_ -> pure Nothing) 'fileExtensionToItemType' False ".gophermap"@
+-- (dotfiles refused by default; @.gophermap@ is the directory-menu source).
 serveDirectory :: T.Text -> Int -> FilePath -> T.Text -> T.Text -> Maybe SortBy -> IO Response
 serveDirectory host port root selectorRoot requestedPath sortBy =
   serveDirectoryWith host port root selectorRoot requestedPath sortBy
-    (\_ -> pure Nothing) fileExtensionToItemType
+    (\_ -> pure Nothing) fileExtensionToItemType False ".gophermap"
 
 -- | Serve a directory listing or file content, with two extension points:
 --
@@ -238,37 +281,82 @@ serveDirectoryWith
   -> Maybe SortBy
   -> (FilePath -> IO (Maybe Response))   -- ^ file hook
   -> (FilePath -> Char)                  -- ^ item-type override fn
+  -> Bool                                -- ^ allow dotfiles (listing + direct access)
+  -> FilePath                            -- ^ directory-menu filename (default @.gophermap@)
   -> IO Response
-serveDirectoryWith host port root selectorRoot requestedPath sortBy fileHook itemTypeFor = do
+serveDirectoryWith host port root selectorRoot requestedPath sortBy fileHook itemTypeFor allowDotfiles indexFileRaw = do
   let
     path = if T.isPrefixOf "/" requestedPath
            then root </> T.unpack (T.drop 1 requestedPath)
            else root </> T.unpack requestedPath
+  -- Strip any path components from the configured indexFile so a
+  -- footgun like `index_file = "../etc/passwd"` can't be used to read
+  -- outside the served root via the directory-menu lookup. takeFileName
+  -- returns just the final path component (or "" if there isn't one);
+  -- both internal reads and the dotfile-exemption use this sanitised
+  -- form, so the value is treated consistently.
+  let indexFile = takeFileName indexFileRaw
   -- Security: ensure the canonicalised path is at or under the canonical
   -- root. Compare on path components, not raw strings — '/var/gopher' is
   -- a string-prefix of '/var/gopher2/secret' but is not a path ancestor
   -- of it.
   rootCanonical <- canonicalizePath root
   pathCanonical <- canonicalizePath path
-  let gopherMapPath = pathCanonical </> ".gophermap"
+  let indexFilePath = pathCanonical </> indexFile
   let isUnderRoot = splitDirectories rootCanonical
                       `isPrefixOf` splitDirectories pathCanonical
   putStrLn $ rootCanonical ++ " ... " ++ pathCanonical ++ show isUnderRoot
   if not isUnderRoot
     then return $ TextResponse $ error' "Access denied: Path is outside the root directory."
+  -- Defence-in-depth: refuse any direct request whose client-supplied
+  -- path traverses a dotfile component, unless the block has explicitly
+  -- opted into dotfile exposure. Hiding from the listing alone isn't
+  -- safety — an attacker who guesses /foo/.env should not be served.
+  -- The configured 'indexFile' is exempt in the final-component position
+  -- so a request for /foo/.gophermap (or whatever the block names its
+  -- directory-menu source) still works. Internal reads of indexFile to
+  -- render a non-dotfile selector aren't affected — this check is on
+  -- the client-supplied path, not on what the server reads.
+  else if not allowDotfiles && hasDisallowedDotfile rootCanonical pathCanonical indexFile
+    then return $ TextResponse $ error' "Access denied: dotfile paths are disabled for this server block."
     else do
-      -- Check if the .gophermap file exists
-      gopherMapExists <- doesFileExist gopherMapPath
+      -- Check if the index (directory-menu) file exists
+      indexExists <- doesFileExist indexFilePath
       directoryExists <- doesDirectoryExist path
-      if gopherMapExists
+      if indexExists
         then do
-          -- Read the .gophermap file and serve its content
-          content <- T.readFile gopherMapPath
+          -- Read the index file and serve its content as a gophermap
+          content <- T.readFile indexFilePath
           return . TextResponse $ gophermapRender host port content
         else if directoryExists then
           -- Generate directory listing with file info
-          TextResponse <$> listDirectoryAsGophermapWith host port root selectorRoot pathCanonical sortBy itemTypeFor
+          TextResponse <$> listDirectoryAsGophermapWith host port root selectorRoot pathCanonical sortBy itemTypeFor allowDotfiles
         else do
           -- File branch: consult the hook before falling back to FileResponse.
           mResp <- fileHook pathCanonical
           pure $ fromMaybe (FileResponse pathCanonical) mResp
+
+-- | True when a client-supplied path traverses a dotfile component
+-- that isn't the configured directory-menu index file in the
+-- final-component position.
+--
+-- * Intermediate dotfile components are always disallowed (you don't
+--   browse /through/ a dotfile).
+-- * Final dotfile components are disallowed /unless/ they equal the
+--   block's configured @indexFile@ — that one specific dotfile name
+--   is the framework's directory-menu source, named-by-convention
+--   even when the convention is a dotfile.
+hasDisallowedDotfile :: FilePath -> FilePath -> FilePath -> Bool
+hasDisallowedDotfile rootCanonical pathCanonical indexFile =
+  let rootDirs = splitDirectories rootCanonical
+      pathDirs = splitDirectories pathCanonical
+      relDirs  = drop (length rootDirs) pathDirs
+  in walk relDirs
+  where
+    -- Total recursion (no `init`/`last`): every non-final segment that
+    -- is a dotfile is disallowed unconditionally; the final segment is
+    -- disallowed only when it's a dotfile that isn't the configured
+    -- index file.
+    walk []       = False
+    walk [s]      = isDotFile s && s /= indexFile
+    walk (s : ss) = isDotFile s || walk ss

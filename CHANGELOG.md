@@ -8,6 +8,26 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.9.0.0 - 2026-05-11
+
+### Security
+
+* **Dotfile paths refused by default.** The file server now refuses any direct request whose path contains a Unix-style dotfile component (e.g. `/foo/.env`, `/.git/config`) and hides dotfiles from auto-generated directory listings. The refusal happens before file resolution, so an attacker who knows or guesses an exact filename can't fetch `.env`, `.git/config`, `.htpasswd`, SSH config, gvfs scratch files, etc. Set `allow_dotfiles = true` on a specific `[[files]]` block to opt back in for that block (needed only when the served content really is dotfiles, e.g. a dotfiles-as-content repo). The block's configured `index_file` (default `.gophermap`) is always exempt — that one dotfile name is the framework's directory-menu source by convention, so a direct request for it returns the menu's source text rather than being denied.
+
+### Changed
+
+* **Default watch directory is now `/var/gopher` (was `/var/gopher/source`).** The .deb pre-install creates `/var/gopher` directly with `venusia:venusia` ownership and the systemd unit watches it; routes.toml lives at `/var/gopher/routes.toml`. Existing installs that relied on the old `/var/gopher/source` layout will need an override at `/etc/systemd/system/venusia.service.d/override.conf` (or move their files up one level) — see the in-unit comment for the override snippet.
+
+* **`serveDirectoryWith` gained two trailing arguments** for `allow_dotfiles` (`Bool`) and the directory-menu filename (`FilePath`, default `.gophermap`). Breaking for direct library users — the only documented caller is `createFileHandler`, which has been updated. Pass `False ".gophermap"` to preserve the default policy.
+
+* **Directory-menu filename is now configurable per `[[files]]` block** via the new `index_file` TOML key (default `.gophermap`). Whatever it's set to is both the file Venusia reads to render a directory's menu and the single dotfile name exempt from the new dotfile refusal. Set it to a non-dotfile (e.g. `index.gph`) if you'd rather your menu sources not start with `.`.
+
+* **File-server selectors are now clean absolute paths.** Auto-generated directory listings at the served root previously emitted entries like `./catalog` (because `makeRelative` returns `.` for "same directory" and the old joining code passed it through), and entries under a catch-all `selector = ""` block lacked the leading `/`. Both are now normalized: every selector in a listing is absolute and free of `.` artifacts.
+
+### Added
+
+* **Demo `routes.toml` seeded by the .deb on first install.** Fresh installs now drop a commented `routes.toml` into `/var/gopher/` on `apt install`, so the server has something to load besides "no routes loaded" out of the box. The demo includes a `[[gateway]]` for `/hello`, a catch-all `[[files]]` block, and a working `[[files.script_extension]]` for `.sh` files (with a commented-out `.lhs` block ready to uncomment once GHC is on the host). All four substitution tokens — `$file`, `$selector`, `$search`, `$pathinfo` — are wired up and documented inline. The default lives at `/usr/share/venusia/default-routes.toml` (also bundled by the package); post-install only seeds it when no `/var/gopher/routes.toml` exists yet, so upgrades leave your edits alone.
+
 ## 0.8.0.0 - 2026-05-09
 
 ### Added
