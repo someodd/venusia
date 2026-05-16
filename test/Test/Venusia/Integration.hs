@@ -98,6 +98,8 @@ tests = testGroup "integration"
                                                              test_intermediateDotfileRefused
   , testCase "dotfiles are listed AND served when allowDotfiles=True"
                                                              test_listingShowsDotfilesWhenOptedIn
+  , testCase "unlisted glob patterns hide files from listing but allow direct fetch"
+                                                             test_unlistedFiltersListingNotDirect
   , testCase "preamble/postamble lines auto-terminated with CRLF in info-wrap mode"
                                                              test_preamblePostambleCRLF
   , testCase "streaming child process is killed when client disconnects mid-stream"
@@ -380,7 +382,7 @@ test_scriptHookExecutesFile =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp Nothing
-                    hook itemTypeFn False ".gophermap"
+                    hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -411,7 +413,7 @@ test_scriptHookFallsThrough =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp Nothing
-                    hook itemTypeFn False ".gophermap"
+                    hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -442,7 +444,7 @@ test_scriptStreamingExecution =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp Nothing
-                    hook itemTypeFn False ".gophermap"
+                    hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -738,7 +740,7 @@ test_listingShowsDotfilesWhenOptedIn =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "" wp Nothing
-                    hook itemTypeFn True ".gophermap"  -- opted in
+                    hook itemTypeFn True ".gophermap" []  -- opted in
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -752,6 +754,44 @@ test_listingShowsDotfilesWhenOptedIn =
       directResp <- gopherRoundtrip port "/.bashrc\r\n"
       assertBool "direct dotfile request served when allowDotfiles=True"
                  (BS.isInfixOf "dotfile content" directResp)
+
+-- | The @unlisted@ field on a [[files]] block hides matching files from
+-- the auto-generated listing but does NOT block direct fetches by
+-- exact selector. Distinct from the dotfile guard, which gates both.
+test_unlistedFiltersListingNotDirect :: Assertion
+test_unlistedFiltersListingNotDirect =
+  withSystemTempDirectory "venusia-listing-unlisted" $ \dir -> do
+    writeFile (dir </> "hello.txt")     "visible\n"
+    writeFile (dir </> "bartleby.conf") "hostname: example.com\n"
+    writeFile (dir </> "foo.bcard")     "title: foo\n"
+    writeFile (dir </> "bar.bcard")     "title: bar\n"
+    let hook       = \_ -> pure Nothing
+        itemTypeFn = fileExtensionToItemType
+        routes =
+          [ onWildcard "" $ \req ->
+              case req.reqWildcard of
+                Just wp ->
+                  serveDirectoryWith "127.0.0.1" 7070 dir "" wp Nothing
+                    hook itemTypeFn False ".gophermap"
+                    ["bartleby.conf", "*.bcard"]
+                Nothing -> pure (TextResponse "no path")
+          ]
+    withServer routes $ \port -> do
+      -- Listing: only the non-unlisted file appears.
+      listResp <- gopherRoundtrip port "/\r\n"
+      assertBool "non-unlisted file appears in the listing"
+                 (BS.isInfixOf "hello.txt" listResp)
+      assertBool "exact-match unlisted entry hidden from listing"
+                 (not (BS.isInfixOf "bartleby.conf" listResp))
+      assertBool "glob-matched .bcard entries hidden from listing"
+                 (not (BS.isInfixOf ".bcard" listResp))
+      -- Direct fetch: unlisted files still served by exact selector.
+      bartResp <- gopherRoundtrip port "/bartleby.conf\r\n"
+      assertBool "direct fetch of exact-unlisted file returns file body"
+                 (BS.isInfixOf "hostname: example.com" bartResp)
+      bcardResp <- gopherRoundtrip port "/foo.bcard\r\n"
+      assertBool "direct fetch of glob-unlisted file returns file body"
+                 (BS.isInfixOf "title: foo" bcardResp)
 
 ------------------------------------------------------------------------
 -- Preamble/postamble framing
@@ -878,7 +918,7 @@ test_scriptExtensionSearchSubstitution =
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
-                       Nothing hook itemTypeFn False ".gophermap"
+                       Nothing hook itemTypeFn False ".gophermap" []
                    Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -913,7 +953,7 @@ test_scriptExtensionSelectorSubstitution =
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
-                       Nothing hook itemTypeFn False ".gophermap"
+                       Nothing hook itemTypeFn False ".gophermap" []
                    Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -946,7 +986,7 @@ test_scriptExtensionRemoteIpSubstitution =
               in case req.reqWildcard of
                    Just wp ->
                      serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
-                       Nothing hook itemTypeFn False ".gophermap"
+                       Nothing hook itemTypeFn False ".gophermap" []
                    Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -979,7 +1019,7 @@ test_scriptExtensionTokenPassthrough =
               case req.reqWildcard of
                 Just wp ->
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" wp
-                    Nothing hook itemTypeFn False ".gophermap"
+                    Nothing hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -1018,7 +1058,7 @@ test_scriptExtensionPathInfo =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn False ".gophermap"
+                    Nothing hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -1053,7 +1093,7 @@ test_scriptExtensionPathInfoEmpty =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn False ".gophermap"
+                    Nothing hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -1090,7 +1130,7 @@ test_scriptExtensionPathInfoTrailingSlash =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn False ".gophermap"
+                    Nothing hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -1126,7 +1166,7 @@ test_scriptExtensionPathInfoNoFile =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn False ".gophermap"
+                    Nothing hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -1160,7 +1200,7 @@ test_scriptExtensionPathInfoSearchCoexists =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 dir "/files/" sw
-                    Nothing hook itemTypeFn False ".gophermap"
+                    Nothing hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do
@@ -1202,7 +1242,7 @@ test_scriptExtensionPathInfoTraversalGuard =
                   let hook = mkScriptHook scriptExts req.reqSelector
                                           req.reqQuery pInfo req.reqClientIp
                   serveDirectoryWith "127.0.0.1" 7070 servedRoot "/files/" sw
-                    Nothing hook itemTypeFn False ".gophermap"
+                    Nothing hook itemTypeFn False ".gophermap" []
                 Nothing -> pure (TextResponse "no path")
           ]
     withServer routes $ \port -> do

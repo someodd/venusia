@@ -12,6 +12,7 @@ module Venusia.FileHandler
   ( serveDirectory
   , serveDirectoryWith
   , fileExtensionToItemType
+  , matchGlob
   ) where
 
 import qualified Data.Text as T
@@ -169,8 +170,9 @@ listDirectoryAsGophermapWith
   :: T.Text -> Int -> FilePath -> T.Text -> FilePath -> Maybe SortBy
   -> (FilePath -> Char)
   -> Bool
+  -> [T.Text]
   -> IO T.Text
-listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPath sortBy itemTypeFor allowDotfiles = do
+listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPath sortBy itemTypeFor allowDotfiles unlisted = do
     -- Hide dotfiles from auto-generated listings unless the block has
     -- opted in. They're typically internal state (.gophermap, .git/,
     -- .env) or transient SFTP/gvfs droppings (.giosaveXXXXX). The
@@ -236,11 +238,14 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
     -- When the README is rendered as a preview, exclude its file from
     -- the regular listing — it's already visible above. The non-active
     -- README (if both .gophermap and .txt are present) stays in the
-    -- listing as a normal file.
-    let isActiveReadme fi = fi.fiName == readmeName
-        listingFiles   = if readmeExists
-                           then filter (not . isActiveReadme) sortedFiles
-                           else sortedFiles
+    -- listing as a normal file. Also hide entries matching the
+    -- @unlisted@ glob patterns configured on this [[files]] block:
+    -- listings-only — direct fetches still resolve.
+    let isActiveReadme fi = readmeExists && fi.fiName == readmeName
+        isUnlisted     fi = any (\p -> matchGlob p fi.fiName) unlisted
+        listingFiles      = filter (\fi -> not (isActiveReadme fi)
+                                        && not (isUnlisted fi))
+                                   sortedFiles
 
     -- "Directory listing for: ." reads as nonsense to a human at the
     -- root of a [[files]] block. Show the block's configured selector
@@ -283,6 +288,35 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
 isDotFile :: FilePath -> Bool
 isDotFile ('.' : _) = True
 isDotFile _         = False
+
+-- | Match a filename against a glob pattern. @*@ matches any run of
+-- characters (including the empty string); everything else matches
+-- literally. Case-sensitive. Path separators are not interpreted —
+-- the match is intended for a single directory entry, not a path.
+--
+-- Used by 'listDirectoryAsGophermapWith' to honour the @unlisted@
+-- field on a @[[files]]@ block: matched filenames are hidden from
+-- the auto-generated listing while remaining reachable by exact
+-- selector.
+matchGlob :: T.Text -> T.Text -> Bool
+matchGlob pat name =
+  case T.splitOn "*" pat of
+    [exact]    -> exact == name        -- no '*' → literal match
+    (p : rest) -> case T.stripPrefix p name of
+      Just leftover -> matchRest rest leftover
+      Nothing       -> False
+    []         -> T.null name          -- defensive; splitOn returns non-empty
+  where
+    -- After matching the initial literal prefix, each '*'-separated
+    -- piece in @rest@ must appear in order in the remaining text;
+    -- the final piece must land exactly at the end of the string.
+    matchRest [end]     s = end `T.isSuffixOf` s
+    matchRest (q : qs)  s = case T.breakOn q s of
+      (_, after)
+        | T.null after && not (T.null q) -> False
+        | otherwise -> matchRest qs (T.drop (T.length q) after)
+    matchRest []        _ = True       -- only reached if pat ends with '*'
+                                       -- and there's nothing left to require
 
 -- | Compute the gopher selector for the "Parent directory (..)"
 -- link in an auto-generated listing, or 'Nothing' if there isn't one.
@@ -340,12 +374,13 @@ buildEntrySelector prefix relPath name =
   in T.pack $ if "/" `isPrefixOf` joined then joined else '/' : joined
 
 -- | Serve a directory listing or file content. Equivalent to
--- @'serveDirectoryWith' … (\\_ -> pure Nothing) 'fileExtensionToItemType' False ".gophermap"@
--- (dotfiles refused by default; @.gophermap@ is the directory-menu source).
+-- @'serveDirectoryWith' … (\\_ -> pure Nothing) 'fileExtensionToItemType' False ".gophermap" []@
+-- (dotfiles refused by default; @.gophermap@ is the directory-menu source;
+-- no @unlisted@ patterns).
 serveDirectory :: T.Text -> Int -> FilePath -> T.Text -> T.Text -> Maybe SortBy -> IO Response
 serveDirectory host port root selectorRoot requestedPath sortBy =
   serveDirectoryWith host port root selectorRoot requestedPath sortBy
-    (\_ -> pure Nothing) fileExtensionToItemType False ".gophermap"
+    (\_ -> pure Nothing) fileExtensionToItemType False ".gophermap" []
 
 -- | Serve a directory listing or file content, with two extension points:
 --
@@ -373,8 +408,9 @@ serveDirectoryWith
   -> (FilePath -> Char)                  -- ^ item-type override fn
   -> Bool                                -- ^ allow dotfiles (listing + direct access)
   -> FilePath                            -- ^ directory-menu filename (default @.gophermap@)
+  -> [T.Text]                            -- ^ unlisted: glob patterns hidden from the auto-listing (listing-only; direct fetches still resolve). Pass @[]@ for no filter.
   -> IO Response
-serveDirectoryWith host port root selectorRoot requestedPath sortBy fileHook itemTypeFor allowDotfiles indexFileRaw = do
+serveDirectoryWith host port root selectorRoot requestedPath sortBy fileHook itemTypeFor allowDotfiles indexFileRaw unlisted = do
   let
     path = if T.isPrefixOf "/" requestedPath
            then root </> T.unpack (T.drop 1 requestedPath)
@@ -420,7 +456,7 @@ serveDirectoryWith host port root selectorRoot requestedPath sortBy fileHook ite
           return . TextResponse $ gophermapRender host port content
         else if directoryExists then
           -- Generate directory listing with file info
-          TextResponse <$> listDirectoryAsGophermapWith host port root selectorRoot pathCanonical sortBy itemTypeFor allowDotfiles
+          TextResponse <$> listDirectoryAsGophermapWith host port root selectorRoot pathCanonical sortBy itemTypeFor allowDotfiles unlisted
         else do
           -- File branch: consult the hook before falling back to FileResponse.
           mResp <- fileHook pathCanonical

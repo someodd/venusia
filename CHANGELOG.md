@@ -8,6 +8,27 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.11.0.0 - 2026-05-16
+
+### Added
+
+* **`unlisted` field on `[[files]]` blocks.** Filename glob patterns whose matches are hidden from the auto-generated directory listing. **Listings only — direct fetches by exact selector still return the file.** Use it to tidy operator-facing files (Bartleby's `bartleby.conf`, sidecar `*.bcard`, atom `feed.xml`) out of the raw menu surface without breaking hand-written gophermap links or tools that read those files.
+
+  ```toml
+  [[files]]
+  selector  = ""
+  path      = "/var/gopher/library"
+  unlisted  = ["bartleby.conf", "*.bcard"]
+  ```
+
+  Glob syntax: `*` matches any run of characters (including the empty string); everything else is literal; per-filename, per-directory; case-sensitive. No `?` or character classes.
+
+* **`Venusia.FileHandler.matchGlob`** is exported alongside the new `unlisted` plumbing, so library callers that want the same "this filename matches that glob" semantic can use it directly.
+
+### Changed
+
+* **Breaking: `serveDirectoryWith` and `listDirectoryAsGophermapWith` gain a final `[T.Text]` positional argument** for the `unlisted` glob patterns. Direct callers need to append `[]` to preserve current behaviour. The TOML-driven path is unaffected. The simple `serveDirectory` wrapper's signature is unchanged.
+
 ## 0.10.1.0 - 2026-05-16
 
 ### Fixed

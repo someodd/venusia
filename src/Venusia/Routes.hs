@@ -131,6 +131,16 @@ data FilesConfig = FilesConfig
   -- a non-dotfile or differently-named convention (e.g.
   -- @index.gph@). Whatever it's set to, that filename is what both
   -- the auto-rendering and the dotfile-exception apply to.
+  , unlisted         :: Maybe [T.Text]
+  -- ^ TOML: @unlisted@. Filename glob patterns whose matches are
+  -- hidden from the auto-generated directory listing. Listing-only:
+  -- a direct request for an exact-matched selector still returns the
+  -- file body. Use it to tidy operator-facing files (Bartleby's
+  -- @bartleby.conf@, sidecar @*.bcard@ files, atom @feed.xml@) out
+  -- of the raw view without breaking hand-written gophermap links
+  -- or tools that fetch the files. Glob: @*@ matches any run of
+  -- characters (including empty); everything else literal;
+  -- per-filename, per-directory; case-sensitive.
   } deriving (Show, Eq, Generic)
 
 -- | A file-extension-driven script runner. When a request resolves to a file
@@ -197,6 +207,7 @@ filesConfigCodec = FilesConfig
     <*> Toml.list fileTypeConfigCodec        "file_type"                  .= (.fileTypes)
     <*> Toml.dioptional (Toml.bool "allow_dotfiles")                      .= (.allowDotfiles)
     <*> Toml.dioptional (Toml.string "index_file")                        .= (.indexFile)
+    <*> Toml.dioptional (Toml.arrayOf Toml._Text "unlisted")              .= (.unlisted)
 
 -- | Codec for a single script-extension specification.
 scriptExtensionConfigCodec :: TomlCodec ScriptExtensionConfig
@@ -311,9 +322,10 @@ createFileHandler config globalFileTypes host port request =
       -- threaded into @$pathinfo@.
       let allowDots = fromMaybe False        config.allowDotfiles
           idxFile   = fromMaybe ".gophermap" config.indexFile
+          unlisted  = fromMaybe []           config.unlisted
       if null scriptExts
         then serveDirectoryWith host port config.path config.selector wildcard
-               Nothing (\_ -> pure Nothing) itemTypeFn allowDots idxFile
+               Nothing (\_ -> pure Nothing) itemTypeFn allowDots idxFile unlisted
         else do
           (scriptWildcard, pathInfo) <-
             splitForPathInfo config.path scriptExts wildcard
@@ -321,7 +333,7 @@ createFileHandler config globalFileTypes host port request =
                                       request.reqQuery pathInfo
                                       request.reqClientIp
           serveDirectoryWith host port config.path config.selector scriptWildcard
-            Nothing fileHook itemTypeFn allowDots idxFile
+            Nothing fileHook itemTypeFn allowDots idxFile unlisted
     Nothing       -> pure $ TextResponse "Error: No path provided for file handler."
 
 -- | Detect a path-info boundary in the request wildcard.

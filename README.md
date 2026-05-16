@@ -89,12 +89,15 @@ Four top-level sections, each one a list of tables.
 [[files]]
 selector = "/files/"        # gopher path prefix; "" is the root selector
 path     = "/var/gopher/source"
+unlisted = ["bartleby.conf", "*.bcard"]   # optional; filename globs hidden from listings
 
   # Optional, nested: see [[files.script_extension]] below.
   # If present, files of that extension are executed instead of served as source.
 ```
 
 A `[[files]]` block can carry any number of nested `[[files.script_extension]]` and `[[files.file_type]]` rules; both are described below.
+
+**`unlisted`** is a list of filename glob patterns whose matches are hidden from the auto-generated directory listing for this block. **Listings only — direct fetches by exact selector still return the file.** Use it to tidy operator-facing files (Bartleby's `bartleby.conf`, sidecar `*.bcard` files, atom `feed.xml`) out of the raw menu surface without breaking hand-written gophermap links or tools that read those files. Glob syntax: `*` matches any run of characters (including empty); everything else is literal; per-filename, per-directory; case-sensitive.
 
 ### `[[gateway]]` — bind a selector to a process
 
