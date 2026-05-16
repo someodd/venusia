@@ -25,7 +25,7 @@ import System.Directory
   , getModificationTime
   , pathIsSymbolicLink
   )
-import Venusia.MenuBuilder (gophermapRender, render, item, error', info, menu, directory, text)
+import Venusia.MenuBuilder (gophermapRender, gophermapItems, render, item, error', info, menu, directory, text)
 import Venusia.Server (Request(..), Response(..))
 import System.FilePath ((</>), takeExtension, takeFileName, makeRelative, takeDirectory, splitDirectories)
 import qualified Data.ByteString as BL
@@ -193,41 +193,53 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
         -- returns 'Nothing' at the catch-all root (empty selector,
         -- relativePath == "."), where there isn't any parent to go to.
         parentLink   = parentLinkFor selectorPrefix relativePath
-        readmePath   = requestedPath </> "README.txt"
+        readmeGmPath  = requestedPath </> "README.gophermap"
+        readmeTxtPath = requestedPath </> "README.txt"
 
     putStrLn $ "Listing directory: " ++ requestedPath
 
-    -- Check if README.txt exists and read it. When it does, we also
-    -- record its size and modification time so the preview header can
-    -- label the link with the same shape the regular listing uses
-    -- (size in human bytes, date as YYYY-MM-DD). The file is filtered
-    -- out of the regular listing below so it isn't shown twice.
-    readmeExists <- doesFileExist readmePath
-    (readmeContents, readmeSize, readmeMTime) <-
-      if readmeExists
+    -- Pick the README source. README.gophermap wins when both exist,
+    -- because it can carry real gopher items (sub-menus, text links,
+    -- search) instead of the info-only preview README.txt can offer.
+    -- The picked file is read and stat'd; size+mtime feed the preview
+    -- header label so the link has the same shape as a normal listing
+    -- row (size in human bytes, date as YYYY-MM-DD). The picked name
+    -- is also filtered out of the regular listing below so it isn't
+    -- shown twice.
+    readmeGmExists  <- doesFileExist readmeGmPath
+    readmeTxtExists <- if readmeGmExists then pure False
+                                         else doesFileExist readmeTxtPath
+    (readmeItems, readmeName, readmeSize, readmeMTime) <-
+      if readmeGmExists
         then do
-          content <- T.lines <$> T.readFile readmePath
-          size    <- getFileSize readmePath
-          mtime   <- getModificationTime readmePath
-          pure (content, size, Just mtime)
-        else pure ([], 0, Nothing)
+          content <- T.readFile readmeGmPath
+          size    <- getFileSize readmeGmPath
+          mtime   <- getModificationTime readmeGmPath
+          pure (gophermapItems hostname port content,
+                "README.gophermap", size, Just mtime)
+        else if readmeTxtExists
+          then do
+            content <- T.lines <$> T.readFile readmeTxtPath
+            size    <- getFileSize readmeTxtPath
+            mtime   <- getModificationTime readmeTxtPath
+            pure (map info content, "README.txt", size, Just mtime)
+          else pure ([], T.empty, 0, Nothing)
 
-    -- Convert README contents to info items
-    let readmeItems    = map info readmeContents
+    let readmeExists   = not (T.null readmeName)
         readmeSizeText = T.pack (formatFileSize readmeSize)
         readmeDateText = maybe T.empty
                                (T.pack . formatTime defaultTimeLocale "%Y-%m-%d")
                                readmeMTime
-        readmeLabel    = "README.txt (" <> readmeSizeText
-                                        <> ", " <> readmeDateText <> "):"
+        readmeLabel    = readmeName <> " (" <> readmeSizeText
+                                            <> ", " <> readmeDateText <> "):"
 
-    -- When the README is rendered as a preview, exclude it from the
-    -- regular file listing — it's already visible above. Filter case-
-    -- sensitively on "README.txt" (the only name the preview path
-    -- recognises) so other similarly-named files aren't dropped.
-    let isReadme fi    = fi.fiName == "README.txt"
+    -- When the README is rendered as a preview, exclude its file from
+    -- the regular listing — it's already visible above. The non-active
+    -- README (if both .gophermap and .txt are present) stays in the
+    -- listing as a normal file.
+    let isActiveReadme fi = fi.fiName == readmeName
         listingFiles   = if readmeExists
-                           then filter (not . isReadme) sortedFiles
+                           then filter (not . isActiveReadme) sortedFiles
                            else sortedFiles
 
     -- "Directory listing for: ." reads as nonsense to a human at the
@@ -250,14 +262,19 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
             return $ item itemType infoText selector hostname port
             ) listingFiles
 
-    -- Compile the final menu, including README.txt contents if it exists
+    -- Compile the final menu, including the README preview if one exists.
     return . render $
       info ("Directory listing for: " <> T.pack displayPath) :
       (case parentLink of
          Just sel -> directory "Parent directory (..)" sel hostname port
          Nothing  -> mempty) :
       info "" :
-      (if null readmeContents then mempty else text readmeLabel (buildEntrySelector selectorPrefix relativePath "README.txt") hostname port : readmeItems ++ [info ""]) ++
+      (if not readmeExists
+         then mempty
+         else text readmeLabel
+                   (buildEntrySelector selectorPrefix relativePath (T.unpack readmeName))
+                   hostname port
+              : readmeItems ++ [info ""]) ++
       gopherItems
 
 -- | Predicate: filename starts with @.@ — i.e. a Unix-style dotfile.

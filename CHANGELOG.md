@@ -8,6 +8,24 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.10.1.0 - 2026-05-16
+
+### Fixed
+
+* **`[[files]]` mount selectors are matched on path-segment boundaries.** A `selector = "/applets"` route used to match any request whose path *started* with `/applets`, so `/applets.bcard` would slip into the `/applets` mount and be resolved inside its served root as the relative path `.bcard` — a dotfile, refused with a misleading "dotfile paths are disabled" error. `onWildcard` now requires the prefix to end at a `/`, consume the whole selector, or be followed by a `/` (wildcard patterns containing `*` keep substring semantics).
+
+### Added
+
+* **`README.gophermap` is rendered as a directory-listing preview**, alongside the existing `README.txt` behaviour. When both files are present, `README.gophermap` wins so the preview can carry real gopher items (sub-menus, text links, search) instead of info-only prose. Bucktooth-style shorthand is supported — a two-field line (`0Display\tselector`) fills in the server's host/port automatically, identical to how `.gophermap` indexes work.
+
+### Changed
+
+* **`Venusia.MenuBuilder` now exports `gophermapItems`**, the parser that backs `gophermapRender` returned as a `[T.Text]` list of items without the terminator. Use this when you want to splice gophermap content into a larger menu (e.g. an embedded preview) rather than emit a standalone gophermap. `gophermapRender` is now `menu . gophermapItems` and produces the same bytes as before.
+
+### Docs
+
+* **Bartleby auto-rebuild recipe shows a foreground `venusia watch …` invocation** alongside the existing systemd `ExecStart` form, for local development without packaging a unit.
+
 ## 0.10.0.1 - 2026-05-11
 
 ### Fixed

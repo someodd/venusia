@@ -215,7 +215,15 @@ port: 70
 selector: /
 ```
 
-Systemd override:
+Foreground (dev) — same arguments as the systemd `ExecStart` below, run directly. Ctrl-C to stop:
+
+```bash
+venusia watch /var/gopher/library gopher.example.com 70 \
+  "/usr/bin/bartleby /var/gopher/library" \
+  10000000
+```
+
+Or as a systemd override:
 
 ```ini
 [Service]
@@ -225,7 +233,7 @@ ExecStart=/usr/bin/venusia watch /var/gopher/library gopher.example.com 70 \
             10000000
 ```
 
-The two trailing positional args are the change-hook command and a debounce delay in microseconds.
+The two trailing positional args (in both forms) are the change-hook command and a debounce delay in microseconds. Edit a source file under `/var/gopher/library/` and Bartleby rewrites the `catalog/` gophermap files in-place — Venusia keeps serving from the same directory, so the next request sees the new menu.
 
 `routes.toml` (in `/var/gopher/library/`):
 

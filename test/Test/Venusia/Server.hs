@@ -213,4 +213,45 @@ onWildcardTests = testGroup "onWildcard"
       let r = onWildcard "/files/*" stubHandler
       -- "/files" (no slash, no wildcard match) still doesn't match a wildcard pattern
       r.matchRoute "/files" @?= Nothing
+
+  -- Segment-aligned prefix matching for non-star mount patterns
+  -- (added Unreleased). A mount at "/applets" must not capture
+  -- "/applets.bcard" or "/appletsville" — those don't share a path
+  -- segment boundary with the prefix.
+  , testCase "no-trailing-slash pattern matches the bare selector" $ do
+      let r = onWildcard "/applets" stubHandler
+      case r.matchRoute "/applets" of
+        Just req -> req.reqWildcard @?= Just ""
+        Nothing  -> assertFailure "expected /applets to match /applets"
+
+  , testCase "no-trailing-slash pattern matches sel with slash suffix" $ do
+      let r = onWildcard "/applets" stubHandler
+      case r.matchRoute "/applets/foo" of
+        Just req -> req.reqWildcard @?= Just "/foo"
+        Nothing  -> assertFailure "expected /applets/foo to match /applets"
+
+  , testCase "no-trailing-slash pattern rejects extension-style suffix" $ do
+      -- This is the /9/applets.bcard bug: /applets.bcard used to be
+      -- captured by the /applets mount with wildcard ".bcard", then
+      -- refused inside the served root as a dotfile path.
+      let r = onWildcard "/applets" stubHandler
+      r.matchRoute "/applets.bcard" @?= Nothing
+
+  , testCase "no-trailing-slash pattern rejects word-extension prefix" $ do
+      let r = onWildcard "/applets" stubHandler
+      r.matchRoute "/appletsville" @?= Nothing
+
+  , testCase "empty (catch-all) pattern still matches anything" $ do
+      let r = onWildcard "" stubHandler
+      case r.matchRoute "/anything.bcard" of
+        Just req -> req.reqWildcard @?= Just "/anything.bcard"
+        Nothing  -> assertFailure "expected catch-all to match"
+
+  , testCase "star-suffix pattern keeps substring semantics" $ do
+      -- "/foo*" should still match /foobar — the author opted into
+      -- substring matching by writing the star.
+      let r = onWildcard "/foo*" stubHandler
+      case r.matchRoute "/foobar" of
+        Just req -> req.reqWildcard @?= Just "bar"
+        Nothing  -> assertFailure "expected /foobar to match /foo*"
   ]

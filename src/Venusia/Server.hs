@@ -202,12 +202,28 @@ onWildcard pattern handler = Route matcher handler
     (prefix, rest) = T.breakOn "*" pattern
     suffix         = T.drop 1 rest  -- skip the '*' character if present
     isDirSelector  = T.null rest && "/" `T.isSuffixOf` pattern
+    hasStar        = not (T.null rest)
+
+    -- For mount-style patterns (no '*'), the prefix must align on a
+    -- path-segment boundary, so a route at @/applets@ matches @/applets@
+    -- and @/applets/foo@ but not @/applets.bcard@ or @/appletsville@.
+    -- A previous version used a bare 'T.stripPrefix', which let
+    -- @/applets.bcard@ slip into the @/applets@ mount and be resolved
+    -- inside its served root as @.bcard@ — a dotfile, refused by the
+    -- file-server's path guard with a misleading "dotfile" error.
+    -- Wildcard patterns (containing '*') keep substring semantics: the
+    -- author asked for them.
+    segmentAligned afterPrefix =
+      T.null afterPrefix
+      || "/" `T.isSuffixOf` prefix
+      || "/" `T.isPrefixOf` afterPrefix
 
     -- Try to match @sel@ against the pattern. Returns the part that the
     -- wildcard captured.
     tryMatch sel = case T.stripPrefix prefix sel of
       Just afterPrefix
-        | T.isSuffixOf suffix afterPrefix ->
+        | T.isSuffixOf suffix afterPrefix
+        , hasStar || segmentAligned afterPrefix ->
             let wildcardLen  = T.length afterPrefix - T.length suffix
                 wildcardPart = T.take wildcardLen afterPrefix
             in Just wildcardPart

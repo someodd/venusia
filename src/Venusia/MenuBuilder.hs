@@ -23,6 +23,7 @@ module Venusia.MenuBuilder
   -- * Rendering
   , render
   , gophermapRender
+  , gophermapItems
   ) where
 
 import Venusia.Types
@@ -113,9 +114,18 @@ The output will look like this:
   iInfo line example	NULL	NULL	NULL
 -}
 gophermapRender :: T.Text -> Int -> T.Text -> T.Text
-gophermapRender host port content =
-  let items = map (parseLine . T.split (=='\t')) $ T.lines content
-  in menu items
+gophermapRender host port content = menu (gophermapItems host port content)
+
+{- | Parse a gophermap text into rendered menu items, without the
+final terminator. Same shorthand rules as 'gophermapRender'
+(2-field lines fill in host/port from the arguments; tabless lines
+become info items); use this when you want to splice gophermap
+content into a larger menu — e.g. a directory listing's README
+preview — instead of returning it as a standalone gophermap.
+-}
+gophermapItems :: T.Text -> Int -> T.Text -> [T.Text]
+gophermapItems host port content =
+  map (parseLine . T.split (=='\t')) $ T.lines content
  where
   parseLine all@(itemTypeAndDisplay:selector:host:portText:_) =
     case T.uncons itemTypeAndDisplay of
