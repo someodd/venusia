@@ -381,6 +381,15 @@ Then `sudo systemctl restart venusia`. (`systemctl edit` already reloaded the un
 - **Slow-reading client defence:** each accepted socket has Linux `TCP_USER_TIMEOUT` set to 120 s. Without this, a slow-reading client can pin a streaming response indefinitely.
 - **Hostile networks:** putting Venusia behind a reverse proxy with per-connection budgets is recommended for public-internet exposure.
 
+### Troubleshooting the watcher
+
+If file changes don't trigger your hook (Bartleby et al.) or `routes.toml` edits don't get picked up, check these in order:
+
+1. **Is the watcher alive?** `journalctl -u venusia.service` should show `Watch registered on <dir>` once at startup, and `fsnotify event: …` lines whenever you touch a file in the watched tree. If you see `WATCHER THREAD DIED:`, an exception killed the watch thread — the message includes the cause (usually fsnotify failing to register).
+2. **Is the inotify limit exhausted?** `cat /proc/sys/fs/inotify/max_user_watches`. The default on many systems is 8192 — a busy host with multiple file-watching daemons can hit it and any new `inotify_add_watch` silently fails. Raise it with `sudo sysctl fs.inotify.max_user_watches=524288` (persist in `/etc/sysctl.d/`).
+3. **Live touch-and-tail.** In one terminal: `sudo journalctl -u venusia.service -f`. In another: `sudo touch /your/watch/dir/.canary && sleep 12 && sudo rm /your/watch/dir/.canary`. You should see `fsnotify event: …` followed by `Executing hook: …` (if a hook is configured) and `Reloading routes…`. If you see no event line at all, fsnotify isn't getting the kernel notification — the watch directory's filesystem (NFS, fuse, some overlayfs setups) may not support inotify properly.
+4. **Hook failures don't kill the watcher** (since 0.11.1.0), but they're still logged as `Hook FAILED (continuing with reload): …`. Read the cause; usually a missing binary in the venusia user's `PATH`, or a hook command that exits non-zero on the input.
+
 ## Building with the library
 
 The same code that powers the daemon is exposed as a Haskell library. Useful when you want behaviour the TOML doesn't cover — custom routing, dynamic content with full type safety, or embedding gopher in a larger service.

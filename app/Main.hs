@@ -6,6 +6,8 @@ import Venusia.Routes (loadRoutes)
 import Options.Applicative
 import System.FilePath ((</>))
 import Control.Concurrent (forkIO)
+import Control.Exception (SomeException, catch)
+import System.IO (BufferMode(LineBuffering), hSetBuffering, stderr, stdout)
 import Control.Concurrent.MVar (newMVar)
 import qualified Data.Text as T
 
@@ -48,6 +50,14 @@ serveWatchCommand = Watch <$> (ServeWatchOptions
 -- | Main entry point
 main :: IO ()
 main = do
+  -- Default 'stdout' buffering is block-buffered when stdout isn't a
+  -- TTY — including the case where systemd-journald collects output
+  -- via a pipe. That makes 'putStrLn' invisible in 'journalctl' until
+  -- enough bytes accumulate to flush a block (typically 4-8 KB), so a
+  -- low-volume daemon like Venusia can appear silent for hours. Force
+  -- line-buffering so every newline is observable as it happens.
+  hSetBuffering stdout LineBuffering
+  hSetBuffering stderr LineBuffering
   let commands = subparser
         ( command "watch" (info serveWatchCommand (progDesc "Serve and watch a directory for changes. This directory will also be checked for a routes.toml file."))
         )
@@ -72,5 +82,11 @@ runServeWatch ServeWatchOptions{..} = do
 
   initialRoutes <- loadRoutes routesPath hostText port
   routesMVar <- newMVar initialRoutes
-  _ <- forkIO $ watchForChanges hostText port maybeWatchHook watchDir routesPath routesMVar
+  -- Surface watcher-thread death in journalctl. Without this catch, a
+  -- fsnotify init failure (or any other exception inside the watcher)
+  -- would die silently in the forked thread, the server would keep
+  -- serving, and hot-reload would just be gone with no log signal.
+  _ <- forkIO $
+    watchForChanges hostText port maybeWatchHook watchDir routesPath routesMVar
+      `catch` \e -> putStrLn $ "WATCHER THREAD DIED: " ++ show (e :: SomeException)
   serveHotReload (show port) noMatchHandler routesMVar

@@ -8,6 +8,26 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.11.1.0 - 2026-05-17
+
+### Fixed
+
+* **`stdout` is now line-buffered, not block-buffered.** Haskell's default `stdout` buffering is block-buffered when the handle isn't a TTY — including the case where `systemd-journald` collects output via a pipe. That made `putStrLn` invisible in `journalctl` until enough bytes accumulated to flush a block (4–8 KB), so a low-volume daemon could appear completely silent for hours. The first thing `main` now does is force line-buffering on both `stdout` and `stderr`, so log lines land in `journalctl` as they happen. (This was the most visible piece of "the watcher is broken" symptoms on a busy production host.)
+
+* **File watcher no longer deadlocks when the hook fails.** Previously, the watcher acquired an MVar lock on each event, ran `callCommand` (which throws on non-zero exit), then released the lock. If the hook ever exited non-zero, the exception propagated out before the lock was released → the MVar stayed empty forever → every subsequent file event was silently dropped. Now the forked handler is wrapped in `finally` so the lock is always returned, and both the hook and the subsequent `reloadRoutes` are wrapped in `try` so each failure is logged as `Hook FAILED …` / `Reload FAILED …` and the watcher stays alive for the next change.
+
+* **Forked watcher thread death is surfaced.** `app/Main.hs` ran `forkIO $ watchForChanges …` without an exception handler. If `withManager` or `watchTree` from fsnotify threw (inotify init failure, unsupported filesystem, watch directory missing), the forked thread died, the main thread happily continued into `serveHotReload`, and hot-reload was silently gone with no log signal. The forked body is now wrapped in `catch`, so a watcher death logs `WATCHER THREAD DIED: <reason>` to `journalctl`.
+
+### Changed
+
+* **`venusia watch` registers the file watch regardless of whether a `CHANGE_HOOK` is provided.** Previously, omitting the hook command made the `watch` subcommand do nothing watch-related at all — the daemon served fine, but `routes.toml` edits required a full restart to take effect. The watch is now always active; the hook, if any, is just an optional pre-reload step inside the change handler.
+
+* **Watcher emits a `Watch registered on <dir>` line after `watchTree` returns**, and a `fsnotify event: …` line for every raw event. Lets operators tell, from `journalctl` alone, whether the watch is alive and whether events are arriving at all — distinguishing "fsnotify silently failed" from "watch active but no events" from "events arriving, handler suppressed by lock."
+
+### Docs
+
+* New **Troubleshooting the watcher** subsection in the production guide, walking through the four most common causes of "the hook isn't running": dead watcher thread, exhausted inotify limit, filesystem that doesn't deliver inotify events, and hook-failure deadlock (now fixed but still worth logging).
+
 ## 0.11.0.0 - 2026-05-16
 
 ### Added

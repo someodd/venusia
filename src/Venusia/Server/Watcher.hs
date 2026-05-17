@@ -1,19 +1,35 @@
--- | This module provides a file watcher that intelligently handles file change
--- events.
+-- | File watcher with debouncing and an optional pre-reload hook.
 --
--- The main challenge with file watching is that a single "save" action can
--- create a storm of low-level system events. This watcher solves that problem by
--- "debouncing" the storm—it reacts only to the first event and ignores all
--- others for a set period, ensuring a command runs only once per actual change.
+-- Each event arrives, the watcher tries to grab an MVar lock, and if it
+-- gets it forks a thread that sleeps the debounce delay, runs the hook
+-- (if any), reloads routes, and releases the lock. Subsequent events
+-- arriving while the lock is held are silently dropped — the
+-- first-edge-wins debounce that prevents a save storm from triggering
+-- a storm of hooks.
+--
+-- Resilience invariants (added to fix the long-standing silent-failure
+-- mode where Bartleby would stop being triggered):
+--
+--   * The watch is registered whether or not a hook is configured. A
+--     'routes.toml' edit reloads routes regardless; the hook is just
+--     an optional pre-reload step.
+--   * The forked handler is wrapped in 'finally' so the lock is
+--     released no matter what — a failing hook or a malformed
+--     'routes.toml' can't deadlock the watcher.
+--   * Both the hook invocation and 'reloadRoutes' are wrapped in
+--     'try' so exceptions land as log lines, not silent thread death.
+--   * Startup and per-event log lines exist so an operator can tell,
+--     from 'journalctl' alone, whether the watch is alive and
+--     whether events are arriving.
 module Venusia.Server.Watcher (watchForChanges, WatchHook (..)) where
 
 import qualified Data.Text as T
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, swapMVar, tryTakeMVar)
+import Control.Exception (SomeException, finally, try)
 import Control.Monad (forever, void, when)
 import Data.Maybe (fromMaybe)
 import System.FSNotify (watchTree, withManager)
-import System.FilePath ((</>))
 import System.Process (callCommand)
 import Venusia.Routes (loadRoutes)
 import Venusia.Server (Route)
@@ -39,33 +55,46 @@ reloadRoutes routesMVar gatewayPath host port = do
   newRoutes <- loadRoutes gatewayPath host port
   void $ swapMVar routesMVar newRoutes
 
--- | Watches a directory for file changes and runs a hook.
+-- | Run the hook (if any) then reload routes. Each step is wrapped in
+-- 'try' so one failure doesn't prevent the next; both failures are
+-- logged. Caller is responsible for the surrounding lock discipline.
+handleChange
+  :: Maybe WatchHook -> MVar [Route] -> FilePath -> T.Text -> Int -> IO ()
+handleChange maybeHook routesMVar gatewayPath host port = do
+  threadDelay actualDelay
+  case maybeHook of
+    Nothing -> pure ()
+    Just WatchHook{..} -> do
+      putStrLn $ "Executing hook: " ++ command
+      result <- try (callCommand command)
+      case (result :: Either SomeException ()) of
+        Right () -> putStrLn "Hook finished."
+        Left  e  -> putStrLn $ "Hook FAILED (continuing with reload): " ++ show e
+  reloadResult <- try (reloadRoutes routesMVar gatewayPath host port)
+  case (reloadResult :: Either SomeException ()) of
+    Right () -> putStrLn "Ready for next change."
+    Left  e  -> putStrLn $ "Reload FAILED: " ++ show e
+  where
+    actualDelay = case maybeHook of
+      Nothing -> 0
+      Just h  -> fromMaybe 0 h.delay
+
+-- | Watches a directory for file changes and (optionally) runs a hook
+-- before reloading routes. Registers the watch whether or not a hook
+-- is configured — 'routes.toml' edits trigger a reload either way.
 --
--- This function is the heart of the module. It solves the "event storm"
--- problem by using an 'MVar' as a gatekeeper.
---
--- === How it Works
---
--- 1. An event arrives.
--- 2. The watcher tries to grab a lock ('MVar').
--- 3. If it gets the lock, it starts a timer in a new thread ('forkIO').
--- 4. If it *doesn't* get the lock, it means another event is already being
--- handled, so it does nothing.
--- 5. After the timer finishes, the command runs and the lock is released,
--- ready for the next change.
---
--- This function is designed to be the main action of a program and will
--- run forever, so it will block the calling thread.
+-- This function blocks forever; run it in its own thread.
 watchForChanges ::
   -- | The host to use for relative/local menu items.
   T.Text ->
   -- | The port to use for relative/local menu items.
   Int ->
-  -- | The hook to run. If 'Nothing', this function does nothing.
+  -- | The hook to run after a change, before the routes reload.
+  -- 'Nothing' means just reload routes.
   Maybe WatchHook ->
   -- | The directory path to watch for changes.
   FilePath ->
-  -- | The path to the gateway definition file for route reloading.
+  -- | The path to the routes definition file for route reloading.
   FilePath ->
   -- | The 'MVar' holding the server's routes to be updated.
   MVar [Route] ->
@@ -73,35 +102,24 @@ watchForChanges ::
 watchForChanges host port maybeHook watchDirectoryPath gatewayPath routesMVar = withManager $ \mgr -> do
   putStrLn $ "Watching for changes in: " ++ watchDirectoryPath
 
-  case maybeHook of
-    Nothing -> pure () -- If no hook is provided, we simply do nothing.
-    Just WatchHook {..} -> do
-      -- The MVar acts as a gatekeeper. When full, we can process an event.
-      -- When empty, an event is already being processed, and newcomers are ignored.
-      lock <- newMVar ()
+  -- The MVar acts as a gatekeeper. When full, we can process an event.
+  -- When empty, an event is already being processed and newcomers are
+  -- silently dropped (first-edge debounce).
+  lock <- newMVar ()
 
-      void $ watchTree mgr watchDirectoryPath (const True) $ \_event -> do
-        -- tryTakeMVar is an atomic "check and grab" operation. This is the
-        -- secret to preventing the race condition where multiple events
-        -- are processed at once.
-        wasLockAvailable <- tryTakeMVar lock
+  void $ watchTree mgr watchDirectoryPath (const True) $ \event -> do
+    putStrLn $ "fsnotify event: " ++ show event
+    wasLockAvailable <- tryTakeMVar lock
+    when (wasLockAvailable == Just ()) $
+      -- forkIO so the debounce delay doesn't block the event listener.
+      -- 'finally' guarantees the lock is released even if 'handleChange'
+      -- throws — the original code would leave the MVar empty forever
+      -- after any hook failure, which silently disabled the watcher.
+      void $ forkIO $
+        handleChange maybeHook routesMVar gatewayPath host port
+          `finally` putMVar lock ()
 
-        -- Only proceed if we were the first to grab the lock.
-        when (wasLockAvailable == Just ()) $ do
-          -- forkIO runs the action in a new thread. This is critical.
-          -- It prevents the delay from blocking the main event listener.
-          void $ forkIO $ do
-            let actualDelay = fromMaybe 0 delay
-            putStrLn $ "Change detected. Waiting for " ++ show actualDelay ++ " microseconds..."
-            threadDelay actualDelay
-
-            putStrLn $ "Executing hook: " ++ command
-            callCommand command
-            reloadRoutes routesMVar gatewayPath host port
-
-            putStrLn "Hook finished. Ready for next change."
-            -- Releasing the lock allows the next event to be processed.
-            putMVar lock ()
+  putStrLn $ "Watch registered on " ++ watchDirectoryPath
 
   -- Keep the main thread alive to allow the watcher to continue running.
   forever $ threadDelay maxBound
