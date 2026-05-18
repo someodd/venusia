@@ -8,6 +8,18 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.11.2.0 - 2026-05-18
+
+### Fixed
+
+* **README.gophermap preview header link is now type 1 (menu), not type 0 (text).** Venusia hardcodes the recognition of `README.gophermap` as a menu source — when it appears at the top of an auto-listing, the file's contents are rendered inline through `gophermapItems`. The link to the source file was bypassing the per-extension item-type resolver entirely (it used the hardcoded `text` helper, which is `item '0'`), so even operators who configured `[[files.file_type]] extension = "gophermap" item_type = "1"` saw `0README.gophermap (…)` in their listings. The header now picks its item-type by which README mode is active: `'1'` for `.gophermap`, `'0'` for `.txt`. No config detour — Venusia's own recognition of the file as a menu is the authority.
+
+### Changed
+
+* **`.gophermap` files are rendered through `gophermapRender` on direct fetch**, not served as raw bytes. Mirrors the existing behaviour for a directory's index `.gophermap`. So a type-1 link to a `.gophermap` file now delivers a real parsed menu to the client (host/port filled in for bucktooth two-field shorthand), instead of raw shorthand that clients parse inconsistently or render malformedly.
+
+* **Default item-type for `.gophermap` in `fileExtensionToItemType` is now `'1'` (menu)**, not the unknown-extension fallback `'9'` (binary download). Mirrors how `.html → 'h'` works — the extension marks the file as its own format, not as something to download. Operators who want different behaviour can still override per-block via `[[files.file_type]]`.
+
 ## 0.11.1.0 - 2026-05-17
 
 ### Fixed

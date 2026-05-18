@@ -80,6 +80,7 @@ fileExtensionToItemType path =
     ".png" -> 'I'  -- Image file
     ".gif" -> 'I'  -- GIF file
     ".html" -> 'h' -- HTML file
+    ".gophermap" -> '1' -- Bucktooth-style menu source (rendered as a gopher menu on fetch)
     _      -> '9'  -- Default to binary for unknown types
 
 -- | Get file info for a single file
@@ -211,21 +212,26 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
     readmeGmExists  <- doesFileExist readmeGmPath
     readmeTxtExists <- if readmeGmExists then pure False
                                          else doesFileExist readmeTxtPath
-    (readmeItems, readmeName, readmeSize, readmeMTime) <-
+    -- The header item-type is hardcoded by which README mode is active,
+    -- not derived from the per-extension resolver. README.gophermap is
+    -- structurally a gopher menu (Venusia hardcodes its recognition as
+    -- one), so the link to it is always type 1 — independent of any
+    -- '[[file_type]]' override. README.txt is text, so type 0.
+    (readmeItems, readmeName, readmeHeaderType, readmeSize, readmeMTime) <-
       if readmeGmExists
         then do
           content <- T.readFile readmeGmPath
           size    <- getFileSize readmeGmPath
           mtime   <- getModificationTime readmeGmPath
           pure (gophermapItems hostname port content,
-                "README.gophermap", size, Just mtime)
+                "README.gophermap", '1', size, Just mtime)
         else if readmeTxtExists
           then do
             content <- T.lines <$> T.readFile readmeTxtPath
             size    <- getFileSize readmeTxtPath
             mtime   <- getModificationTime readmeTxtPath
-            pure (map info content, "README.txt", size, Just mtime)
-          else pure ([], T.empty, 0, Nothing)
+            pure (map info content, "README.txt", '0', size, Just mtime)
+          else pure ([], T.empty, '0', 0, Nothing)
 
     let readmeExists   = not (T.null readmeName)
         readmeSizeText = T.pack (formatFileSize readmeSize)
@@ -276,7 +282,7 @@ listDirectoryAsGophermapWith hostname port serveRoot selectorPrefix requestedPat
       info "" :
       (if not readmeExists
          then mempty
-         else text readmeLabel
+         else item readmeHeaderType readmeLabel
                    (buildEntrySelector selectorPrefix relativePath (T.unpack readmeName))
                    hostname port
               : readmeItems ++ [info ""]) ++
@@ -458,9 +464,20 @@ serveDirectoryWith host port root selectorRoot requestedPath sortBy fileHook ite
           -- Generate directory listing with file info
           TextResponse <$> listDirectoryAsGophermapWith host port root selectorRoot pathCanonical sortBy itemTypeFor allowDotfiles unlisted
         else do
-          -- File branch: consult the hook before falling back to FileResponse.
+          -- File branch: consult the hook before falling back to a
+          -- direct file response. '.gophermap' files are parsed through
+          -- 'gophermapRender' so a direct fetch produces a real gopher
+          -- menu (host/port filled in for bucktooth shorthand) and so a
+          -- type-1 link to such a file actually delivers a menu to the
+          -- client. Mirrors the existing index-file behaviour above.
           mResp <- fileHook pathCanonical
-          pure $ fromMaybe (FileResponse pathCanonical) mResp
+          case mResp of
+            Just r  -> pure r
+            Nothing
+              | takeExtension pathCanonical == ".gophermap" -> do
+                  content <- T.readFile pathCanonical
+                  pure . TextResponse $ gophermapRender host port content
+              | otherwise -> pure $ FileResponse pathCanonical
 
 -- | True when a client-supplied path traverses a dotfile component
 -- that isn't the configured directory-menu index file in the
