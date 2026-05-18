@@ -12,6 +12,18 @@
 
 ---
 
+## Contents
+
+- [What it is](#what-it-is)
+- [Gopher in 60 seconds](#gopher-in-60-seconds)
+- [Quickstart](#quickstart)
+- [What can I do with this?](#what-can-i-do-with-this)
+- [Configuration](#configuration) — [`[[files]]`](#files--serve-a-directory) · [`[[gateway]]`](#gateway--bind-a-selector-to-a-process) · [`[[files.script_extension]]`](#filesscript_extension--run-files-of-a-given-extension) · [`[[file_type]]`](#file_type--override-directory-listing-item-types)
+- [Recipes](#recipes)
+- [Production](#production)
+- [Building with the library](#building-with-the-library)
+- [Internals](#internals)
+
 ## What it is
 
 A self-contained gopher server. Point it at a directory; it serves the directory. Add a few lines of TOML and it runs subprocesses, streams long-lived processes, and executes files by extension. The same code is also a Haskell library.
@@ -22,6 +34,24 @@ Used in production at **gopher.someodd.zip**. Pairs with two ecosystem tools:
 - **[RYVM](https://github.com/someodd/ryvm)** — search ranking for type-7 selectors.
 
 If you came here looking for a fast way to put a phlog online, you're in the right place. If you came here because you remember 1991 fondly, also yes.
+
+## Gopher in 60 seconds
+
+If you've never spoken gopher, this section unblocks the rest of the README. The whole protocol surface this document assumes is:
+
+- **Selector** — the path part of a request, like a URL minus host and scheme (e.g. `/cgi/wiki.lhs/Page`). A gopher menu is just a list of `(item type, display, selector, host, port)` rows.
+- **Item type** — a single character at the start of each menu row declaring what kind of thing the row points at:
+
+| Type | Meaning | Type | Meaning |
+|---|---|---|---|
+| `0` | text file | `I` | image (JPEG / PNG / BMP) |
+| `1` | menu / sub-directory | `g` | GIF |
+| `7` | search prompt (query taken interactively) | `h` | HTML or arbitrary URL |
+| `9` | binary blob | `i` | info line (display only, no link) |
+| | | `3` | error |
+
+- **`.gophermap`** — a hand-written menu file. Tab-delimited rows of `T<display>\t<selector>\t<host>\t<port>`, where `T` is the type character above. Venusia accepts a 2-field shorthand (`T<display>\t<selector>`) that fills in host/port from server config, and tab-less lines become info items (`i`). If a directory contains a `.gophermap`, Venusia serves it instead of an auto-generated listing.
+- **Testing without a client.** `curl gopher://host:port/SEL` reads the raw response — fine for spot checks. For an interactive feel use `lynx`, `bombadillo`, or [lagrange](https://gmi.skyjake.fi/lagrange/) (mainstream browsers dropped gopher support a decade ago).
 
 ## Quickstart
 
@@ -87,9 +117,11 @@ Four top-level sections, each one a list of tables.
 
 ```toml
 [[files]]
-selector = "/files/"        # gopher path prefix; "" is the root selector
-path     = "/var/gopher/source"
-unlisted = ["bartleby.conf", "*.bcard"]   # optional; filename globs hidden from listings
+selector       = "/files/"        # gopher path prefix; "" is the root selector
+path           = "/var/gopher/source"
+unlisted       = ["bartleby.conf", "*.bcard"]   # optional; filename globs hidden from listings
+allow_dotfiles = false            # optional; dotfiles refused by default (listing + direct fetch)
+index_file     = ".gophermap"     # optional; filename rendered as the directory menu
 
   # Optional, nested: see [[files.script_extension]] below.
   # If present, files of that extension are executed instead of served as source.
@@ -97,7 +129,17 @@ unlisted = ["bartleby.conf", "*.bcard"]   # optional; filename globs hidden from
 
 A `[[files]]` block can carry any number of nested `[[files.script_extension]]` and `[[files.file_type]]` rules; both are described below.
 
-**`unlisted`** is a list of filename glob patterns whose matches are hidden from the auto-generated directory listing for this block. **Listings only — direct fetches by exact selector still return the file.** Use it to tidy operator-facing files (Bartleby's `bartleby.conf`, sidecar `*.bcard` files, atom `feed.xml`) out of the raw menu surface without breaking hand-written gophermap links or tools that read those files. Glob syntax: `*` matches any run of characters (including empty); everything else is literal; per-filename, per-directory; case-sensitive.
+| Field | Meaning |
+|---|---|
+| `selector` | Gopher path prefix. Empty `""` is the catch-all root. Mounts match on path-segment boundaries: a block at `/applets` matches `/applets` and `/applets/foo` but not `/applets.bcard` or `/appletsville`. |
+| `path` | Filesystem root to serve. |
+| `unlisted` | Filename glob patterns hidden from the auto-generated listing. **Listings only — direct fetches by exact selector still return the file.** |
+| `allow_dotfiles` | Default `false`. A dotfile (`.env`, `.git/…`, transient gvfs droppings) is refused with a type-3 error even on direct fetch — hiding from the listing alone isn't safety. Set `true` only when your served content really is dotfiles. The configured `index_file` is always exempt, so it can keep its dotfile name. |
+| `index_file` | Filename Venusia reads to render this directory's menu. Default `.gophermap`. Change it if your menu source lives under a non-dotfile or differently-named convention (e.g. `index.gph`). |
+
+**Glob syntax for `unlisted`:** `*` matches any run of characters (including empty); everything else is literal; per-filename, per-directory; case-sensitive. Use it to tidy operator-facing files (Bartleby's `bartleby.conf`, sidecar `*.bcard` files, atom `feed.xml`) out of the raw menu surface without breaking hand-written gophermap links or tools that read those files.
+
+**README preview.** If a served directory contains `README.gophermap` or `README.txt`, Venusia renders it at the top of the auto-generated listing — `README.gophermap` as real menu items, `README.txt` as info lines. `README.gophermap` wins when both exist. The previewed file is excluded from the listing rows below so it doesn't appear twice. The preview is triggered by filename alone (not via the listing pipeline), so `unlisted` does not suppress it; to opt out, rename or remove the file.
 
 ### `[[gateway]]` — bind a selector to a process
 
@@ -147,6 +189,7 @@ path     = "/var/gopher/output/cgi/"
 | `$selector` | Gopher selector that resolved to this script (e.g. `/cgi/figlet.hs`). Use it to emit menu items pointing back at the script without hardcoding its path. |
 | `$search` | The request's query string (after the tab), or empty. |
 | `$pathinfo` | Selector portion *after* the script filename, with a leading slash. A request for `/cgi/wiki.hs/Page/SubPage` runs `wiki.hs` with `$pathinfo = /Page/SubPage`; a request for `/cgi/wiki.hs/` gives `/`; `/cgi/wiki.hs` gives the empty string. Lets one script back a whole virtual sub-tree without one route per page. Modeled on CGI's `PATH_INFO`. |
+| `$remote_ip` | Connecting client's IP address as text (IPv4 dotted-quad or IPv6 colon form). Empty when the peer can't be looked up (unix-socket peer, `getPeerName` failure). Use it for rate-limiting, per-IP rule application, or audit logging — Venusia just plumbs the value through; what the script does with it is the script's call. |
 
 The process's working directory is the file's parent directory, so `readFile "data.txt"` finds a sibling.
 
@@ -178,7 +221,15 @@ Resolution order for the auto-generated listing:
 1. **Nested `[[files.file_type]]`** on the serving `[[files]]` block, if defined for the extension.
 2. **Top-level `[[file_type]]`**, if defined.
 3. Otherwise, if a `[[files.script_extension]]` rule covers the extension: `'1'` when `as_info_lines = true`, else `'0'`.
-4. Otherwise, the hardcoded fallback (`.txt → 0`, `.png → I`, `.html → h`, …).
+4. Otherwise, the hardcoded fallback table:
+
+   | Extension | Item type |
+   |---|---|
+   | `.txt`, `.md`, `.csv` | `0` (text) |
+   | `.jpg`, `.jpeg`, `.png`, `.bmp`, `.gif` | `I` (image) |
+   | `.html` | `h` (HTML / URL) |
+   | `.gophermap` | `1` (menu — and the file is parsed through `gophermapRender` on direct fetch so the link delivers a real menu) |
+   | anything else | `9` (binary) |
 
 User-authored `.gophermap` files always win — the gophermap author wrote the type character themselves; the server doesn't second-guess.
 
@@ -378,7 +429,8 @@ Then `sudo systemctl restart venusia`. (`systemctl edit` already reloaded the un
 
 - **Logs:** `journalctl -u venusia.service -f`.
 - **Connection cap:** the accept loop is bounded by a `QSem` at 256 in-flight connections (see `maxConcurrentConnections` in `Venusia.Server`). Raise it *and* the host's `ulimit -n` together if you expect more.
-- **Slow-reading client defence:** each accepted socket has Linux `TCP_USER_TIMEOUT` set to 120 s. Without this, a slow-reading client can pin a streaming response indefinitely.
+- **Silent / slow-writing client defence:** the initial `recv` is bounded by a 30 s read timeout (`readTimeoutMicros` in `Venusia.Server`). A client that opens the socket but never sends a request line is dropped instead of holding a thread.
+- **Slow-reading client defence:** each accepted socket has Linux `TCP_USER_TIMEOUT` set to 120 s. Without this, a slow-reading client can pin a streaming response indefinitely. (The 30 s read timeout above doesn't help once a response is being written — different phase, different timer.)
 - **Hostile networks:** putting Venusia behind a reverse proxy with per-connection budgets is recommended for public-internet exposure.
 
 ### Troubleshooting the watcher
