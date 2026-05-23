@@ -62,18 +62,20 @@ Everything below assumes a Debian-flavoured Linux. The project ships `.deb` pack
 #    https://github.com/someodd/venusia/releases/latest
 sudo dpkg -i ~/Downloads/venusia_*.deb
 
-# 2. Tell systemd which host and port to bind. The shipped unit doesn't
-#    set them (every deployment differs); a drop-in override is the
-#    simplest way:
-sudo systemctl edit venusia.service
-#  → in the editor that opens, paste, then save:
+# 2. The shipped unit already listens on :70 (it carries
+#    CAP_NET_BIND_SERVICE, so the unprivileged `venusia` user can bind the
+#    privileged port). The only deployment-specific bit is the HOST arg,
+#    which Venusia prints in generated menu links — set it to your real
+#    hostname (and the watch dir, if you want a subdirectory) by editing
+#    the whole unit in place:
+sudo systemctl edit --full venusia.service
+#  → in the editor that opens, find the ExecStart line and change it, e.g.:
 #
-#    [Service]
-#    ExecStart=
-#    ExecStart=/usr/bin/venusia watch /var/gopher/source 127.0.0.1 7070
+#    ExecStart=/usr/bin/venusia watch /var/gopher/source 127.0.0.1 70
 #
-#  (empty ExecStart= clears the inherited default; the second sets the
-#   new one. systemd convention.)
+#  (--full opens the entire unit, so you just edit the one line — no
+#   `ExecStart=` clearing trick. 127.0.0.1 keeps this local test's links
+#   pointing at your machine; use your public hostname in production.)
 
 # 3. Tell Venusia to serve the directory, and drop in some content.
 sudo tee /var/gopher/source/routes.toml > /dev/null <<'EOF'
@@ -87,7 +89,7 @@ echo "Hello from gopher!" | sudo tee /var/gopher/source/welcome.txt
 sudo systemctl restart venusia
 
 # 5. See it
-curl gopher://127.0.0.1:7070
+curl gopher://127.0.0.1:70
 ```
 
 Save a file in `/var/gopher/source/` → it shows up. That's the static-phlog story; everything else is opt-in TOML.
@@ -409,21 +411,19 @@ Reachable as `gopher://host/7/search`. The script outputs valid gophermap rows; 
 
 ### Configuring
 
-The shipped unit does *not* set host or port — every deployment differs. Use `systemctl edit venusia.service` to add an override (see [Quickstart](#quickstart)).
+The shipped unit listens on **port 70** out of the box — it carries `AmbientCapabilities=CAP_NET_BIND_SERVICE` (with a matching `CapabilityBoundingSet`), so the unprivileged `venusia` user can bind the privileged gopher port without the process ever running as root. The HOST arg in the default `ExecStart` is a placeholder (`gopher.example.com`); Venusia prints it verbatim in generated menu links but it does *not* affect which interface is bound (the server always binds the wildcard address). Set it to your real hostname — and adjust the watch directory or add a change hook — with `systemctl edit --full venusia.service`, which opens the whole unit so you edit the `ExecStart` line in place (see [Quickstart](#quickstart)).
 
-For a Bartleby-integrated library, the override looks like:
+For a Bartleby-integrated library, the edited `ExecStart` looks like:
 
 ```ini
-[Service]
-ExecStart=
 ExecStart=/usr/bin/venusia watch /var/gopher/library gopher.example.com 70 \
             "/usr/bin/bartleby /var/gopher/library" \
             10000000
 ```
 
-Then `sudo systemctl restart venusia`. (`systemctl edit` already reloaded the unit; no separate `daemon-reload` needed.)
+Then `sudo systemctl restart venusia`. (`systemctl edit --full` already reloaded the unit; no separate `daemon-reload` needed.)
 
-**Drop-in override vs full edit.** `systemctl edit venusia.service` (what we used in the quickstart) creates a small drop-in file under `/etc/systemd/system/venusia.service.d/`. Package upgrades won't clobber it. If you'd rather edit the entire unit file (and accept that future `.deb` upgrades to the unit file won't merge into your version), use `sudo systemctl edit --full venusia.service` instead.
+**Full edit vs drop-in override.** `systemctl edit --full venusia.service` (what we used above) copies the shipped unit to `/etc/systemd/system/venusia.service` and opens it whole, so you edit the one `ExecStart` line directly — the simplest mental model, and it matches the unit you see documented here. The tradeoff: future `.deb` upgrades to the unit file won't merge into your copy. If you'd rather let upstream unit changes flow through on upgrade, use `sudo systemctl edit venusia.service` instead — that creates a small drop-in under `/etc/systemd/system/venusia.service.d/` that overrides only what you set, but a drop-in must clear the inherited value first (`ExecStart=` on its own line) before setting the new one.
 
 ### Operating
 

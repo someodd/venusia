@@ -80,16 +80,24 @@ jobs:
         Type=simple
         User=venusia
         Group=venusia
+        # Allow binding the privileged gopher port (70) while still running as
+        # the unprivileged `venusia` user -- the process never runs as root.
+        # This single capability is the only thing needed to serve :70 directly.
+        AmbientCapabilities=CAP_NET_BIND_SERVICE
+        # Hardening: restrict the bounding set so :70-binding is the *only*
+        # privilege this service can ever hold.
+        CapabilityBoundingSet=CAP_NET_BIND_SERVICE
         # The 'watch' subcommand requires WATCH_DIR HOST PORT as positional args.
-        # Default below binds to loopback on port 7070 (unprivileged) and
-        # serves out of /var/gopher (also where routes.toml lives). To expose
-        # publicly or change the watch directory, drop a file at
-        # /etc/systemd/system/venusia.service.d/override.conf with:
-        #   [Service]
-        #   ExecStart=
-        #   ExecStart=/usr/bin/venusia watch /var/gopher gopher.example.com 70
-        # Then: systemctl daemon-reload && systemctl restart venusia
-        ExecStart=/usr/bin/venusia watch /var/gopher 127.0.0.1 7070
+        # Default below listens on :70 and serves out of /var/gopher (also where
+        # routes.toml lives). The HOST arg (gopher.example.com) is only printed
+        # in generated menu links -- it does NOT affect which interface is bound
+        # (the server always binds the wildcard address). Set it to your real
+        # hostname so links resolve, and change the watch directory if needed,
+        # by editing the whole unit in place:
+        #   sudo systemctl edit --full venusia.service
+        # then change the ExecStart line below to your hostname and save.
+        # Then: systemctl restart venusia
+        ExecStart=/usr/bin/venusia watch /var/gopher gopher.example.com 70
         Restart=on-failure
         [Install]
         WantedBy=multi-user.target

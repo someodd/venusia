@@ -8,6 +8,12 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.11.3.0 - 2026-05-22
+
+### Changed
+
+* **The shipped `systemd` unit now listens on port 70 by default.** The packaged `ExecStart` changed from `… 127.0.0.1 7070` to `… gopher.example.com 70`, and the unit gained `AmbientCapabilities=CAP_NET_BIND_SERVICE` plus a matching `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`. The unprivileged `venusia` user can now bind the privileged gopher port directly — the process still never runs as root, and the bounding set is restricted so port-70 binding is the only privilege the service can ever hold. Operators no longer need a reverse proxy or port rewrite just to serve `:70` natively. The HOST arg (`gopher.example.com`) is only a placeholder printed in generated menu links — it does not affect which interface is bound — so the only deployment-specific override now needed is the real hostname (recommended via `systemctl edit --full venusia.service`, which opens the whole unit for an in-place `ExecStart` edit). README quickstart and Production sections updated to match.
+
 ## 0.11.2.0 - 2026-05-18
 
 ### Fixed
