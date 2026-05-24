@@ -8,6 +8,12 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.11.4.0 - 2026-05-23
+
+### Fixed
+
+* **Connections now close with a clean TCP FIN instead of an abortive RST.** After writing a response the server called `close` on the client socket immediately. When a socket is closed while unread bytes remain in its kernel receive buffer, Linux aborts the connection with an RST rather than a FIN — so clients saw `connection reset by peer` (curl exit code 56) intermittently, even though the full response body had already arrived. A real client sends `selector\r\n`, and whenever the trailing bytes landed in a separate TCP segment that arrived after the server's single `recv` returned, those bytes sat unread at close time and triggered the abort; the segment-timing dependence is what made it intermittent and made it hit every route (static files, scripts, streaming alike). The connection handler now tears down through `gracefulClose`, which sends FIN, drains any unread inbound bytes, then closes — so the handshake completes cleanly and client exit codes are no longer trashed. A new `gracefulCloseTimeoutMillis` (2 s) caps how long the drain waits for the peer's FIN. Covered by a regression test that deliberately leaves unread bytes in the receive buffer and asserts a clean EOF.
+
 ## 0.11.3.0 - 2026-05-22
 
 ### Changed

@@ -10,7 +10,7 @@ import Test.Tasty.HUnit
 import qualified Data.ByteString as BS
 import Control.Concurrent (forkIO, killThread, threadDelay, ThreadId)
 import Control.Concurrent.MVar (newMVar)
-import Control.Exception (bracket, catch, try, SomeException)
+import Control.Exception (bracket, catch, try, IOException, SomeException)
 import Control.Monad (forM_, replicateM_)
 import Data.IORef (newIORef, modifyIORef', readIORef)
 import Network.Socket
@@ -59,6 +59,8 @@ tests = testGroup "integration"
                                                              test_tabQuery
   , testCase "Connection is closed after each response (server-initiated EOF)"
                                                              test_serverClosesAfterResponse
+  , testCase "Connection closes cleanly (FIN, not RST) when client left unread bytes"
+                                                             test_cleanCloseWithUnreadInput
   , testCase "FD does not leak when the producer throws partway through"
                                                              test_producerThrowsNoLeak
   , testCase "Many sequential requests do not leak state"   test_manySequentialRequests
@@ -278,6 +280,25 @@ test_serverClosesAfterResponse = do
   withServer routes $ \port -> do
     resp <- gopherRoundtrip port "/x\r\n"
     resp @?= "ok"
+
+-- | A clean TCP teardown (FIN), not an abortive one (RST), even when the
+-- client has sent bytes the server never reads. The server does a single
+-- recv(1024); the 8 KB of 'A's after the selector line exceed that, so they
+-- sit unread in the kernel buffer when the handler closes. A bare close()
+-- on a socket with unread inbound data makes Linux emit RST instead of FIN —
+-- which surfaces to the client as ECONNRESET (curl error 56) and trashes the
+-- exit code even though the body arrived. 'gracefulClose' drains the unread
+-- bytes first, so the read completes with a clean EOF.
+test_cleanCloseWithUnreadInput :: Assertion
+test_cleanCloseWithUnreadInput = do
+  let routes = [ on "/hi" $ \_ -> pure (TextResponse "hello\r\n") ]
+  withServer routes $ \port -> do
+    let req = "/hi\r\n" <> BS.replicate 8192 0x41
+    result <- try (gopherRoundtrip port req)
+                :: IO (Either IOException BS.ByteString)
+    case result of
+      Left e  -> assertFailure ("connection reset instead of clean close: " <> show e)
+      Right r -> assertBool "body delivered" (BS.isInfixOf "hello" r)
 
 ------------------------------------------------------------------------
 -- FD safety / leak checks

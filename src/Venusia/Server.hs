@@ -93,6 +93,20 @@ maxConcurrentConnections = 256
 connectionWriteTimeoutMillis :: Int
 connectionWriteTimeoutMillis = 120 * 1000
 
+-- | Milliseconds 'gracefulClose' will spend draining unread inbound bytes and
+-- waiting for the peer's FIN before closing the socket. A legitimate client
+-- sends its FIN within a round-trip, so this is effectively a safety cap
+-- against a client that reads the body but never closes its half.
+--
+-- Without the drain, @close()@ on a socket that still has unread data in its
+-- receive buffer makes the kernel abort the connection with a TCP RST instead
+-- of a clean FIN. That surfaces to clients as \"connection reset by peer\"
+-- (curl error 56) and trashes their exit code even though the response body
+-- was delivered in full.
+{-@ gracefulCloseTimeoutMillis :: {v:Int | v > 0} @-}
+gracefulCloseTimeoutMillis :: Int
+gracefulCloseTimeoutMillis = 2000
+
 -- | A Gopher request with selector and optional query
 data Request = Request
   { reqSelector :: T.Text
@@ -358,18 +372,30 @@ logHandlerException e = case fromException e :: Maybe SomeAsyncException of
   Nothing -> hPutStrLn stderr $
     "venusia: connection handler error: " ++ displayException e
 
+-- | Close a client socket with a clean TCP teardown. 'gracefulClose' sends
+-- FIN, drains any unread inbound bytes (so the kernel doesn't abort the
+-- connection with an RST), then closes — closing the descriptor internally
+-- even if the drain throws. We swallow teardown errors so a half-gone peer
+-- can't turn connection cleanup into a logged handler error.
+closeGracefully :: Socket -> IO ()
+closeGracefully sock =
+  gracefulClose sock gracefulCloseTimeoutMillis
+    `catch` \(_ :: SomeException) -> close sock
+
 -- | Handle a connection using a dynamic list of routes from an MVar.
 --
 -- The socket is always closed via 'finally' so a thrown handler (or a
 -- streaming producer that hits a broken pipe) cannot leak the file
--- descriptor. The initial @recv@ is bounded by 'readTimeoutMicros'; if the
--- client never sends a request we drop the connection rather than holding a
--- thread. Synchronous exceptions thrown by the handler or producer are
--- caught and logged via 'logHandlerException' so they don't tear down the
--- forked thread with an uncaught error dump.
+-- descriptor. Cleanup goes through 'closeGracefully', which drains any unread
+-- request bytes and sends a FIN rather than an abortive RST. The initial
+-- @recv@ is bounded by 'readTimeoutMicros'; if the client never sends a
+-- request we drop the connection rather than holding a thread. Synchronous
+-- exceptions thrown by the handler or producer are caught and logged via
+-- 'logHandlerException' so they don't tear down the forked thread with an
+-- uncaught error dump.
 handleConnHotReload :: Handler -> MVar [Route] -> Socket -> IO ()
 handleConnHotReload noMatch routesMVar sock =
-  (body `catch` logHandlerException) `finally` close sock
+  (body `catch` logHandlerException) `finally` closeGracefully sock
   where
     body = do
       clientIp <- peerIpText sock
