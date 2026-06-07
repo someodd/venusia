@@ -68,10 +68,10 @@ jobs:
         mkdir -p pkg/usr/share/venusia
         cp ./dist/Venusia-exe pkg/usr/bin/venusia
         chmod +x pkg/usr/bin/venusia
-        # Demo routes.toml shipped at /usr/share/venusia/default-routes.toml.
+        # Demo venusia.toml shipped at /usr/share/venusia/default-venusia.toml.
         # post-install.sh seeds it into /var/gopher/ on first install only —
-        # existing routes.toml files survive upgrades untouched.
-        cp packaging/default-routes.toml pkg/usr/share/venusia/default-routes.toml
+        # existing venusia.toml files survive upgrades untouched.
+        cp packaging/default-venusia.toml pkg/usr/share/venusia/default-venusia.toml
         cat <<'EOF' > pkg/lib/systemd/system/venusia.service
         [Unit]
         Description=Venusia Gopher Server
@@ -89,7 +89,7 @@ jobs:
         CapabilityBoundingSet=CAP_NET_BIND_SERVICE
         # The 'watch' subcommand requires WATCH_DIR HOST PORT as positional args.
         # Default below listens on :70 and serves out of /var/gopher (also where
-        # routes.toml lives). The HOST arg (gopher.example.com) is only printed
+        # venusia.toml lives). The HOST arg (gopher.example.com) is only printed
         # in generated menu links -- it does NOT affect which interface is bound
         # (the server always binds the wildcard address). Set it to your real
         # hostname so links resolve, and change the watch directory if needed,
@@ -121,11 +121,11 @@ jobs:
         cat <<'EOF' > ./post-install.sh
         #!/bin/sh
         set -e
-        # Seed a demo routes.toml on first install. Don't overwrite on upgrade.
-        if [ ! -e /var/gopher/routes.toml ]; then
+        # Seed a demo venusia.toml on first install. Don't overwrite on upgrade.
+        if [ ! -e /var/gopher/venusia.toml ]; then
           install -o venusia -g venusia -m 0640 \
-            /usr/share/venusia/default-routes.toml \
-            /var/gopher/routes.toml
+            /usr/share/venusia/default-venusia.toml \
+            /var/gopher/venusia.toml
         fi
         systemctl daemon-reload
         systemctl enable venusia.service
@@ -151,7 +151,7 @@ jobs:
           --after-install ./post-install.sh \
           --before-remove ./pre-uninstall.sh \
           -C pkg usr/bin/venusia lib/systemd/system/venusia.service \
-                 usr/share/venusia/default-routes.toml
+                 usr/share/venusia/default-venusia.toml
 
     - name: Release
       uses: softprops/action-gh-release@v1

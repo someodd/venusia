@@ -1,5 +1,5 @@
-# Demo Venusia routes.toml — installed by the .deb on first run at
-# /var/gopher/routes.toml.
+# Demo Venusia config (venusia.toml) — installed by the .deb on first run at
+# /var/gopher/venusia.toml.
 #
 # Edit this file freely; the watcher reloads on save (see
 # /lib/systemd/system/venusia.service). On package upgrades the .deb
@@ -103,3 +103,27 @@ path     = "/var/gopher"
   #  [[files.file_type]]
   #  extension = "lhs"
   #  item_type = "1"
+
+# ----------------------------------------------------------------------
+# Operator-tunable server settings. The whole table is optional; any key
+# you omit falls back to the built-in default shown below. These are read
+# ONCE at startup — unlike routes, changing [server] needs a restart
+# (systemctl restart venusia), not just a save.
+# ----------------------------------------------------------------------
+# [server]
+#   # Bytes pulled in the single initial recv per connection. This is the
+#   # ceiling on how much of a request the server reads; anything beyond
+#   # is discarded. 4096 leaves headroom for long search queries.
+#   request_buffer_bytes = 4096
+#
+#   # Accept-loop concurrency cap. Raise alongside the systemd LimitNOFILE
+#   # if you serve many simultaneous clients.
+#   max_connections = 256
+#
+#   # Seconds to wait for a silent client to send its request line before
+#   # dropping the connection (slowloris defence).
+#   read_timeout_secs = 30
+#
+#   # Seconds (TCP_USER_TIMEOUT) a stalled write may hang before the kernel
+#   # reaps the connection. No-op on BSD/macOS.
+#   write_timeout_secs = 120

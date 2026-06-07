@@ -29,6 +29,7 @@ import Venusia.Server
   , on
   , onWildcard
   , runOnSocket
+  , defaultServerConfig
   )
 import Venusia.Routes
   ( ScriptExtensionConfig(..)
@@ -149,7 +150,7 @@ withServer routes action =
       portRaw <- socketPort sock
       let p = fromIntegral portRaw :: Int
       routesVar <- newMVar routes
-      tid <- forkIO $ runOnSocket sock noMatchHandler routesVar
+      tid <- forkIO $ runOnSocket defaultServerConfig sock noMatchHandler routesVar
       -- A tiny pause so accept() is established before the test connects.
       threadDelay 50_000
       pure (sock, tid, p)
@@ -283,8 +284,9 @@ test_serverClosesAfterResponse = do
 
 -- | A clean TCP teardown (FIN), not an abortive one (RST), even when the
 -- client has sent bytes the server never reads. The server does a single
--- recv(1024); the 8 KB of 'A's after the selector line exceed that, so they
--- sit unread in the kernel buffer when the handler closes. A bare close()
+-- recv of cfg.requestBufferBytes (default 4096); the 8 KB of 'A's after the
+-- selector line exceed that, so they sit unread in the kernel buffer when the
+-- handler closes. A bare close()
 -- on a socket with unread inbound data makes Linux emit RST instead of FIN —
 -- which surfaces to the client as ECONNRESET (curl error 56) and trashes the
 -- exit code even though the body arrived. 'gracefulClose' drains the unread

@@ -18,7 +18,7 @@
 - [Gopher in 60 seconds](#gopher-in-60-seconds)
 - [Quickstart](#quickstart)
 - [What can I do with this?](#what-can-i-do-with-this)
-- [Configuration](#configuration) — [`[[files]]`](#files--serve-a-directory) · [`[[gateway]]`](#gateway--bind-a-selector-to-a-process) · [`[[files.script_extension]]`](#filesscript_extension--run-files-of-a-given-extension) · [`[[file_type]]`](#file_type--override-directory-listing-item-types)
+- [Configuration](#configuration) — [`[[files]]`](#files--serve-a-directory) · [`[[gateway]]`](#gateway--bind-a-selector-to-a-process) · [`[[files.script_extension]]`](#filesscript_extension--run-files-of-a-given-extension) · [`[[file_type]]`](#file_type--override-directory-listing-item-types) · [`[server]`](#server--operator-tunable-server-settings)
 - [Recipes](#recipes)
 - [Production](#production)
 - [Building with the library](#building-with-the-library)
@@ -78,7 +78,7 @@ sudo systemctl edit --full venusia.service
 #   pointing at your machine; use your public hostname in production.)
 
 # 3. Tell Venusia to serve the directory, and drop in some content.
-sudo tee /var/gopher/source/routes.toml > /dev/null <<'EOF'
+sudo tee /var/gopher/source/venusia.toml > /dev/null <<'EOF'
 [[files]]
 selector = ""
 path     = "/var/gopher/source"
@@ -94,7 +94,7 @@ curl gopher://127.0.0.1:70
 
 Save a file in `/var/gopher/source/` → it shows up. That's the static-phlog story; everything else is opt-in TOML.
 
-> Don't have a Debian box? Same flow with `stack build && stack exec -- Venusia-exe watch /path/to/dir 127.0.0.1 7070` instead of the `.deb` — the `routes.toml` from step 3 goes inside `/path/to/dir`. Requires [Stack](https://docs.haskellstack.org/).
+> Don't have a Debian box? Same flow with `stack build && stack exec -- Venusia-exe watch /path/to/dir 127.0.0.1 7070` instead of the `.deb` — the `venusia.toml` from step 3 goes inside `/path/to/dir`. Requires [Stack](https://docs.haskellstack.org/).
 
 ## What can I do with this?
 
@@ -111,7 +111,7 @@ Save a file in `/var/gopher/source/` → it shows up. That's the static-phlog st
 
 ## Configuration
 
-The watcher looks for `routes.toml` in the watched directory.
+The watcher looks for `venusia.toml` in the watched directory.
 
 Four top-level sections, each one a list of tables.
 
@@ -239,6 +239,27 @@ User-authored `.gophermap` files always win — the gophermap author wrote the t
 
 `file_type` is cosmetic — a wrong rule shows the wrong icon. Globals are fine. `script_extension` is executive — a wrong rule executes code. Forcing executive rules into a `[[files]]` block makes it impossible to enable execution at-distance via an unrelated config edit.
 
+### `[server]` — operator-tunable server settings
+
+A single optional table for the operational knobs. The whole table is optional, and any key you omit falls back to its built-in default:
+
+```toml
+[server]
+request_buffer_bytes = 4096   # bytes read in the single initial recv per connection
+max_connections      = 256    # accept-loop concurrency cap
+read_timeout_secs    = 30     # wait for a silent client's request line, then drop
+write_timeout_secs   = 120    # TCP_USER_TIMEOUT; reap a stalled write (no-op on BSD/macOS)
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `request_buffer_bytes` | `4096` | Size of the **single** initial `recv`. This is the ceiling on how much of a request the server reads — it is *not* an accumulating loop, so anything the client sends beyond this is discarded. Raise it if you serve unusually long search queries. |
+| `max_connections` | `256` | In-flight connections accepted at once; further connections block on `accept` until one finishes. Raise alongside the systemd `LimitNOFILE` / `ulimit -n`. |
+| `read_timeout_secs` | `30` | How long to wait for a silent client to send its request line before dropping the connection (slowloris defence). |
+| `write_timeout_secs` | `120` | Linux `TCP_USER_TIMEOUT` — how long a stalled write may hang before the kernel reaps the connection. No-op on platforms without the option. |
+
+> **`[server]` is read once at startup, not hot-reloaded.** Unlike route definitions (which the watcher reloads on save), changing `[server]` requires a restart — `systemctl restart venusia`, or restart the process.
+
 ## Recipes
 
 ### A library that auto-rebuilds (Venusia + Bartleby)
@@ -291,7 +312,7 @@ ExecStart=/usr/bin/venusia watch /var/gopher/library gopher.example.com 70 \
 
 The two trailing positional args (in both forms) are the change-hook command and a debounce delay in microseconds. Edit a source file under `/var/gopher/library/` and Bartleby rewrites the `catalog/` gophermap files in-place — Venusia keeps serving from the same directory, so the next request sees the new menu.
 
-`routes.toml` (in `/var/gopher/library/`):
+`venusia.toml` (in `/var/gopher/library/`):
 
 ```toml
 [[files]]
@@ -435,7 +456,7 @@ Then `sudo systemctl restart venusia`. (`systemctl edit --full` already reloaded
 
 ### Troubleshooting the watcher
 
-If file changes don't trigger your hook (Bartleby et al.) or `routes.toml` edits don't get picked up, check these in order:
+If file changes don't trigger your hook (Bartleby et al.) or `venusia.toml` edits don't get picked up, check these in order:
 
 1. **Is the watcher alive?** `journalctl -u venusia.service` should show `Watch registered on <dir>` once at startup, and `fsnotify event: …` lines whenever you touch a file in the watched tree. If you see `WATCHER THREAD DIED:`, an exception killed the watch thread — the message includes the cause (usually fsnotify failing to register).
 2. **Is the inotify limit exhausted?** `cat /proc/sys/fs/inotify/max_user_watches`. The default on many systems is 8192 — a busy host with multiple file-watching daemons can hit it and any new `inotify_add_watch` silently fails. Raise it with `sudo sysctl fs.inotify.max_user_watches=524288` (persist in `/etc/sysctl.d/`).

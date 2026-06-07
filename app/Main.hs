@@ -2,7 +2,7 @@ module Main (main) where
 
 import Venusia.Server
 import Venusia.Server.Watcher (watchForChanges, WatchHook(..))
-import Venusia.Routes (loadRoutes)
+import Venusia.Routes (loadConfig)
 import Options.Applicative
 import System.FilePath ((</>))
 import Control.Concurrent (forkIO)
@@ -11,9 +11,9 @@ import System.IO (BufferMode(LineBuffering), hSetBuffering, stderr, stdout)
 import Control.Concurrent.MVar (newMVar)
 import qualified Data.Text as T
 
--- | The name of the routes file to look for inside the watched directory.
+-- | The name of the config file to look for inside the watched directory.
 routesFile :: FilePath
-routesFile = "routes.toml"
+routesFile = "venusia.toml"
 
 -- | Defines the CLI's command structure.
 data Command
@@ -59,7 +59,7 @@ main = do
   hSetBuffering stdout LineBuffering
   hSetBuffering stderr LineBuffering
   let commands = subparser
-        ( command "watch" (info serveWatchCommand (progDesc "Serve and watch a directory for changes. This directory will also be checked for a routes.toml file."))
+        ( command "watch" (info serveWatchCommand (progDesc "Serve and watch a directory for changes. This directory will also be checked for a venusia.toml file."))
         )
 
   let opts = info (helper <*> commands)
@@ -80,7 +80,9 @@ runServeWatch ServeWatchOptions{..} = do
     maybeWatchHook = fmap (\HookInfo{..} -> WatchHook hookCommand (Just hookDelay)) maybeHookInfo
     hostText = T.pack host
 
-  initialRoutes <- loadRoutes routesPath hostText port
+  -- The [server] table is read once here at startup; it is not hot-reloaded
+  -- (the watcher only refreshes routes), so changing it requires a restart.
+  (serverCfg, initialRoutes) <- loadConfig routesPath hostText port
   routesMVar <- newMVar initialRoutes
   -- Surface watcher-thread death in journalctl. Without this catch, a
   -- fsnotify init failure (or any other exception inside the watcher)
@@ -89,4 +91,4 @@ runServeWatch ServeWatchOptions{..} = do
   _ <- forkIO $
     watchForChanges hostText port maybeWatchHook watchDir routesPath routesMVar
       `catch` \e -> putStrLn $ "WATCHER THREAD DIED: " ++ show (e :: SomeException)
-  serveHotReload (show port) noMatchHandler routesMVar
+  serveHotReload serverCfg (show port) noMatchHandler routesMVar

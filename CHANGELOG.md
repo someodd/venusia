@@ -8,6 +8,29 @@ and this project adheres to the
 
 ## Unreleased
 
+## 0.12.0.0 - 2026-06-06
+
+### Changed
+
+* **Breaking: the config file is now `venusia.toml`, not `routes.toml`.** The file gained a `[server]` table (below), so it now configures the *server*, not just routes — the name follows. There is **no fallback**: Venusia looks only for `venusia.toml` in the watched directory and will not pick up an old `routes.toml`. To migrate, rename it: `mv /var/gopher/routes.toml /var/gopher/venusia.toml`. Fresh `.deb` installs seed the demo at `/var/gopher/venusia.toml` (from `/usr/share/venusia/default-venusia.toml`); existing installs keep their file but must rename it manually on upgrade. (This follows the project's established clean-break convention — cf. the `menu → as_info_lines` rename: no alias, no deprecation period.)
+
+* **Breaking (library API): `serveHotReload` and `runOnSocket` now take a `ServerConfig` as their first argument.** Downstream framework users must thread a `ServerConfig` (use `defaultServerConfig` for the previous behaviour) through these calls.
+
+### Added
+
+* **New optional `[server]` table for operator-tunable server settings**, parsed into a `ServerConfig`. All keys are optional and fall back to the built-in defaults:
+
+  | Key | Default | Meaning |
+  |---|---|---|
+  | `request_buffer_bytes` | `4096` | bytes for the single initial `recv` per connection |
+  | `max_connections` | `256` | accept-loop concurrency cap |
+  | `read_timeout_secs` | `30` | slowloris read-timeout (seconds) |
+  | `write_timeout_secs` | `120` | `TCP_USER_TIMEOUT` (seconds; no-op on BSD/macOS) |
+
+  The table is read **once at startup and is not hot-reloaded** — unlike route definitions, changing `[server]` requires a restart. (The concurrency semaphore is created once at boot and can't meaningfully change mid-run, so all four keys share that restart-required contract.)
+
+* **The per-connection request read buffer is now configurable** via `request_buffer_bytes`, and its default was raised from **1024 → 4096 bytes**, giving more headroom for long search queries. Note this is still a *single* `recv`, not an accumulating loop: the value is the ceiling on how much of a request the server reads, not a guaranteed maximum request size.
+
 ## 0.11.4.0 - 2026-05-23
 
 ### Fixed

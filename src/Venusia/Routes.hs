@@ -1,7 +1,9 @@
 {- | Gopher Route Configuration
 
-This module handles parsing a routes.toml file to configure and build all
+This module handles parsing a @venusia.toml@ file to configure and build all
 server routes, including command gateways, file servers, and search handlers.
+It also parses the optional @[server]@ table into a 'ServerConfig' (see
+'loadConfig').
 -}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE DeriveGeneric         #-}
@@ -12,6 +14,7 @@ server routes, including command gateways, file servers, and search handlers.
 
 module Venusia.Routes
   ( loadRoutes
+  , loadConfig
   , runProcess
   , resolveItemType
   , mkScriptHook
@@ -21,6 +24,7 @@ module Venusia.Routes
   , FilesConfig (..)
   , RoutesConfig (..)
   , routesConfigCodec
+  , serverConfigCodec
   ) where
 
 import           Control.Exception          (SomeException, bracket, catch, try)
@@ -51,7 +55,9 @@ import           System.FilePath            (splitDirectories, takeDirectory,
 
 import           Venusia.MenuBuilder        (error', info, render)
 import           Venusia.Server             (Handler, Request (..), Response (..),
-                                             Route, on, onWildcard, streamFromHandle)
+                                             Route, ServerConfig (..),
+                                             defaultServerConfig, on, onWildcard,
+                                             streamFromHandle)
 import           Venusia.FileHandler        (fileExtensionToItemType, serveDirectoryWith)
 
 -- Configuration Data Types ---
@@ -72,6 +78,10 @@ data RoutesConfig = RoutesConfig
   -- ^ Global per-extension overrides for the gopher item-type character used
   -- in auto-generated directory listings. Any @[[files.file_type]]@ on the
   -- serving @[[files]]@ block wins over these.
+  , serverConfig :: Maybe ServerConfig
+  -- ^ The optional @[server]@ table of operator-tunable server settings.
+  -- 'Nothing' when the table is absent; 'loadConfig' resolves that to
+  -- 'defaultServerConfig'. Read once at startup only — not hot-reloaded.
   } deriving (Show, Eq, Generic)
 
 -- | Configuration for a command-based gateway process.
@@ -181,6 +191,33 @@ routesConfigCodec = RoutesConfig
     <$> Toml.list gatewayConfigCodec  "gateway"   .= (.gateways)
     <*> Toml.list filesConfigCodec    "files"     .= (.files)
     <*> Toml.list fileTypeConfigCodec "file_type" .= (.fileTypes)
+    <*> Toml.dioptional (Toml.table serverConfigCodec "server") .= (.serverConfig)
+
+-- | Codec for the optional @[server]@ table. Every key is optional; a missing
+-- key falls back to the corresponding 'defaultServerConfig' value. The two
+-- timeout keys are expressed in __seconds__ in TOML (operator-friendly) and
+-- scaled to the internal micro-/milli-second units here.
+serverConfigCodec :: TomlCodec ServerConfig
+serverConfigCodec = ServerConfig
+    <$> intKey       d.requestBufferBytes           "request_buffer_bytes" .= (.requestBufferBytes)
+    <*> intKey       d.maxConcurrentConnections     "max_connections"      .= (.maxConcurrentConnections)
+    <*> intKeyScaled d.readTimeoutMicros (1000 * 1000) "read_timeout_secs"  .= (.readTimeoutMicros)
+    <*> intKeyScaled d.connectionWriteTimeoutMillis 1000 "write_timeout_secs" .= (.connectionWriteTimeoutMillis)
+  where
+    d = defaultServerConfig
+
+-- | An optional integer TOML key with an internal default and a unit scale
+-- factor applied to the parsed value (TOML unit -> internal unit). A missing
+-- key yields @def@ (already in internal units). Decode-only in practice; the
+-- write direction divides back by @scale@ for codec symmetry.
+intKeyScaled :: Int -> Int -> Toml.Key -> TomlCodec Int
+intKeyScaled def scale key =
+    Toml.dimap (Just . (`div` scale)) (maybe def (* scale))
+      (Toml.dioptional (Toml.int key))
+
+-- | An optional integer TOML key with an internal default and no scaling.
+intKey :: Int -> Toml.Key -> TomlCodec Int
+intKey def = intKeyScaled def 1
 
 -- | Codec for a single command gateway configuration.
 gatewayConfigCodec :: TomlCodec GatewayConfig
@@ -227,19 +264,29 @@ fileTypeConfigCodec = FileTypeConfig
 
 -- Route Loading and Building ---
 
--- | Reads the TOML config and builds a list of all Gopher routes.
+-- | Reads the TOML config and builds a list of all Gopher routes. Used by the
+-- watcher's hot-reload path, which only ever needs the routes — the @[server]@
+-- table is intentionally ignored here (it is read once at startup by
+-- 'loadConfig' and is not hot-reloadable).
 loadRoutes :: FilePath -> T.Text -> Int -> IO [Route]
-loadRoutes path host port = do
+loadRoutes path host port = snd <$> loadConfig path host port
+
+-- | Reads the TOML config and returns both the resolved 'ServerConfig' (the
+-- @[server]@ table, or 'defaultServerConfig' when absent/unparseable) and the
+-- built routes. Used once at startup; the watcher uses 'loadRoutes' thereafter.
+loadConfig :: FilePath -> T.Text -> Int -> IO (ServerConfig, [Route])
+loadConfig path host port = do
   eConfig <- readRoutesConfig path
   case eConfig of
     Left err -> do
-      putStrLn $ "Error loading route configuration: " ++ err
+      putStrLn $ "Error loading configuration: " ++ err
       putStrLn "No routes loaded."
-      return []
+      return (defaultServerConfig, [])
     Right config -> do
-      let routes = buildRoutes config host port
+      let scfg   = fromMaybe defaultServerConfig config.serverConfig
+          routes = buildRoutes config host port
       putStrLn $ "Successfully loaded " ++ show (length routes) ++ " routes."
-      return routes
+      return (scfg, routes)
 
 -- | Reads and decodes the routes configuration from a TOML file.
 readRoutesConfig :: FilePath -> IO (Either String RoutesConfig)

@@ -11,11 +11,11 @@
 -- mode where Bartleby would stop being triggered):
 --
 --   * The watch is registered whether or not a hook is configured. A
---     'routes.toml' edit reloads routes regardless; the hook is just
+--     'venusia.toml' edit reloads routes regardless; the hook is just
 --     an optional pre-reload step.
 --   * The forked handler is wrapped in 'finally' so the lock is
 --     released no matter what — a failing hook or a malformed
---     'routes.toml' can't deadlock the watcher.
+--     'venusia.toml' can't deadlock the watcher.
 --   * Both the hook invocation and 'reloadRoutes' are wrapped in
 --     'try' so exceptions land as log lines, not silent thread death.
 --   * Startup and per-event log lines exist so an operator can tell,
@@ -81,7 +81,7 @@ handleChange maybeHook routesMVar gatewayPath host port = do
 
 -- | Watches a directory for file changes and (optionally) runs a hook
 -- before reloading routes. Registers the watch whether or not a hook
--- is configured — 'routes.toml' edits trigger a reload either way.
+-- is configured — 'venusia.toml' edits trigger a reload either way.
 --
 -- This function blocks forever; run it in its own thread.
 watchForChanges ::

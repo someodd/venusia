@@ -14,6 +14,9 @@ module Venusia.Server (
   -- * Streaming helpers
   , streamFromHandle
   , chunkSize
+  -- * Server configuration
+  , ServerConfig(..)
+  , defaultServerConfig
   -- * Server setup and running
   , serveHotReload
   , runOnSocket
@@ -56,13 +59,30 @@ import System.Timeout (timeout)
 chunkSize :: Int
 chunkSize = 32768
 
+-- | Default bytes pulled from a client in the single initial @recv@.
+--
+-- This is a /single/ @recv@, not an accumulating read loop, so it is the
+-- ceiling on how much of a request the server ever looks at: anything the
+-- client sends beyond this sits unread in the kernel buffer and is discarded
+-- when the connection closes. It is therefore the per-connection request read
+-- buffer, /not/ a guaranteed maximum request size — a request split across TCP
+-- segments could arrive partial (irrelevant in practice; a Gopher selector,
+-- optional TAB, and search string arrive in one segment).
+--
+-- 4 KB leaves comfortable headroom for long search queries while staying tiny
+-- per connection. Overridable per deployment via the @[server]@ config table
+-- (@request_buffer_bytes@); see 'ServerConfig'.
+{-@ defaultRequestBufferBytes :: {v:Int | v > 0} @-}
+defaultRequestBufferBytes :: Int
+defaultRequestBufferBytes = 4096
+
 -- | How long the server will wait for a client to send the request line before
 -- giving up. Defends against slowloris-style holders that open a connection and
 -- never speak. Only applies to the initial @recv@; once a response is being
 -- produced the producer sets the pace.
-{-@ readTimeoutMicros :: {v:Int | v > 0} @-}
-readTimeoutMicros :: Int
-readTimeoutMicros = 30 * 1000 * 1000
+{-@ defaultReadTimeoutMicros :: {v:Int | v > 0} @-}
+defaultReadTimeoutMicros :: Int
+defaultReadTimeoutMicros = 30 * 1000 * 1000
 
 -- | Maximum number of in-flight connections accepted at once.
 --
@@ -73,15 +93,15 @@ readTimeoutMicros = 30 * 1000 * 1000
 --
 -- 256 leaves headroom against the typical 1024 default soft @ulimit -n@.
 -- Operators serving more concurrent traffic should both raise that limit
--- and edit this constant.
-{-@ maxConcurrentConnections :: {v:Int | v > 0} @-}
-maxConcurrentConnections :: Int
-maxConcurrentConnections = 256
+-- and the @[server]@ @max_connections@ key (see 'ServerConfig').
+{-@ defaultMaxConcurrentConnections :: {v:Int | v > 0} @-}
+defaultMaxConcurrentConnections :: Int
+defaultMaxConcurrentConnections = 256
 
 -- | Linux @TCP_USER_TIMEOUT@: bound on how long the kernel waits for an ACK
 -- before declaring the connection dead. This is the only line of defence
 -- against a slow-reading client that holds a streaming response open
--- indefinitely (the read-side 'readTimeoutMicros' guard doesn't apply once
+-- indefinitely (the read-side read timeout guard doesn't apply once
 -- a response is being written).
 --
 -- Set to two minutes — generous enough that legitimate clients on flaky
@@ -89,9 +109,41 @@ maxConcurrentConnections = 256
 -- connection is reaped instead of pinning a thread + FD forever.
 --
 -- No-op on platforms that don't support the option (BSD, macOS).
-{-@ connectionWriteTimeoutMillis :: {v:Int | v > 0} @-}
-connectionWriteTimeoutMillis :: Int
-connectionWriteTimeoutMillis = 120 * 1000
+{-@ defaultConnectionWriteTimeoutMillis :: {v:Int | v > 0} @-}
+defaultConnectionWriteTimeoutMillis :: Int
+defaultConnectionWriteTimeoutMillis = 120 * 1000
+
+-- | Operator-tunable server settings, parsed from the @[server]@ table of the
+-- config file (see "Venusia.Routes") and threaded into the accept loop and
+-- per-connection handler. A missing @[server]@ table yields
+-- 'defaultServerConfig'.
+--
+-- These are read /once at startup/ and are not hot-reloaded: unlike route
+-- definitions, changing @[server]@ requires a server restart (the concurrency
+-- semaphore in 'runOnSocket' is created once and cannot meaningfully change
+-- mid-run, so all four keys share that restart-required contract for
+-- consistency).
+data ServerConfig = ServerConfig
+  { requestBufferBytes           :: Int
+  -- ^ Bytes for the single initial @recv@ (see 'defaultRequestBufferBytes').
+  , maxConcurrentConnections     :: Int
+  -- ^ Accept-loop concurrency cap (see 'defaultMaxConcurrentConnections').
+  , readTimeoutMicros            :: Int
+  -- ^ Initial-read timeout in microseconds (see 'defaultReadTimeoutMicros').
+  , connectionWriteTimeoutMillis :: Int
+  -- ^ Write-side @TCP_USER_TIMEOUT@ in milliseconds
+  -- (see 'defaultConnectionWriteTimeoutMillis').
+  } deriving (Show, Eq)
+
+-- | The built-in defaults, used when no @[server]@ table is present and as the
+-- per-key fallback for any key the operator omits.
+defaultServerConfig :: ServerConfig
+defaultServerConfig = ServerConfig
+  { requestBufferBytes           = defaultRequestBufferBytes
+  , maxConcurrentConnections     = defaultMaxConcurrentConnections
+  , readTimeoutMicros            = defaultReadTimeoutMicros
+  , connectionWriteTimeoutMillis = defaultConnectionWriteTimeoutMillis
+  }
 
 -- | Milliseconds 'gracefulClose' will spend draining unread inbound bytes and
 -- waiting for the peer's FIN before closing the socket. A legitimate client
@@ -322,34 +374,35 @@ trySetSocketOption sock opt val =
 -- accepting, or wiring TLS in front. 'serveHotReload' is the convenient
 -- wrapper that does the bind/listen for you.
 --
--- Concurrency is bounded by 'maxConcurrentConnections' via a semaphore: when
--- the cap is reached, the loop blocks on @accept@ until an in-flight
+-- Concurrency is bounded by @cfg.maxConcurrentConnections@ via a semaphore:
+-- when the cap is reached, the loop blocks on @accept@ until an in-flight
 -- handler finishes. This caps FD usage under connection floods. Each
--- accepted socket also has 'connectionWriteTimeoutMillis' applied as a
+-- accepted socket also has @cfg.connectionWriteTimeoutMillis@ applied as a
 -- write-side timeout (Linux @TCP_USER_TIMEOUT@; no-op elsewhere) so a
 -- slow-reading client cannot pin a streaming response forever.
-runOnSocket :: Socket -> Handler -> MVar [Route] -> IO ()
-runOnSocket sock noMatch routesMVar = do
-  sem <- newQSem maxConcurrentConnections
+runOnSocket :: ServerConfig -> Socket -> Handler -> MVar [Route] -> IO ()
+runOnSocket cfg sock noMatch routesMVar = do
+  sem <- newQSem cfg.maxConcurrentConnections
   forever $ do
     waitQSem sem
     (conn, _) <- accept sock
-    trySetSocketOption conn UserTimeout connectionWriteTimeoutMillis
+    trySetSocketOption conn UserTimeout cfg.connectionWriteTimeoutMillis
     forkFinally
-      (handleConnHotReload noMatch routesMVar conn)
+      (handleConnHotReload cfg noMatch routesMVar conn)
       (\_ -> signalQSem sem)
 
 -- | Main server loop with hot-reloading support.
 serveHotReload
-  :: String         -- ^ Port to listen on.
+  :: ServerConfig   -- ^ Operator-tunable server settings.
+  -> String         -- ^ Port to listen on.
   -> Handler      -- ^ Handler for invalid selectors.
   -> MVar [Route]   -- ^ A mutable reference to the list of routes.
   -> IO ()
-serveHotReload port noMatch routesMVar = withSocketsDo $ do
+serveHotReload cfg port noMatch routesMVar = withSocketsDo $ do
   addr <- resolve port
   sock <- open addr
   putStrLn $ "Gopher server (hot-reload enabled) running on port " ++ port
-  runOnSocket sock noMatch routesMVar
+  runOnSocket cfg sock noMatch routesMVar
   where
     resolve p = do
       let hints = defaultHints { addrFlags = [AI_PASSIVE], addrSocketType = Stream }
@@ -388,18 +441,18 @@ closeGracefully sock =
 -- streaming producer that hits a broken pipe) cannot leak the file
 -- descriptor. Cleanup goes through 'closeGracefully', which drains any unread
 -- request bytes and sends a FIN rather than an abortive RST. The initial
--- @recv@ is bounded by 'readTimeoutMicros'; if the client never sends a
--- request we drop the connection rather than holding a thread. Synchronous
--- exceptions thrown by the handler or producer are caught and logged via
--- 'logHandlerException' so they don't tear down the forked thread with an
--- uncaught error dump.
-handleConnHotReload :: Handler -> MVar [Route] -> Socket -> IO ()
-handleConnHotReload noMatch routesMVar sock =
+-- @recv@ reads up to @cfg.requestBufferBytes@ and is bounded by
+-- @cfg.readTimeoutMicros@; if the client never sends a request we drop the
+-- connection rather than holding a thread. Synchronous exceptions thrown by
+-- the handler or producer are caught and logged via 'logHandlerException' so
+-- they don't tear down the forked thread with an uncaught error dump.
+handleConnHotReload :: ServerConfig -> Handler -> MVar [Route] -> Socket -> IO ()
+handleConnHotReload cfg noMatch routesMVar sock =
   (body `catch` logHandlerException) `finally` closeGracefully sock
   where
     body = do
       clientIp <- peerIpText sock
-      mreq <- timeout readTimeoutMicros (NBS.recv sock 1024)
+      mreq <- timeout cfg.readTimeoutMicros (NBS.recv sock cfg.requestBufferBytes)
       case mreq of
         Nothing  -> return ()  -- slowloris / silent client
         Just raw -> do
